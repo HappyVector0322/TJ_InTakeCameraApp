@@ -1,4 +1,6 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import Snackbar from '@mui/material/Snackbar';
+import Alert from '@mui/material/Alert';
 import { STEPS, STEP_IDS } from './steps';
 import { StepWizard } from './components/StepWizard';
 import { IntakeReview } from './components/IntakeReview';
@@ -44,6 +46,7 @@ function consumeTokenFromUrl() {
 export default function App() {
   const [authenticated, setAuthenticated] = useState(!!getToken());
   const [authChecked, setAuthChecked] = useState(false);
+  const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
 
   // SSO: consume token from URL when opened from TJ_99glide (App Drawer), then skip login
   useEffect(() => {
@@ -188,11 +191,11 @@ export default function App() {
       setPhotos({});
       setIntake(INITIAL_INTAKE);
       let message = jobId ? `Job file created successfully. Job ID: ${jobId}` : 'Job file created successfully.';
-      if (customerMatched) message += '\n(Customer matched existing.)';
-      else message += '\n(New customer created.)';
-      if (equipmentMatched) message += '\n(Unit matched existing.)';
-      else if (result?.equipmentData) message += '\n(New unit created.)';
-      window.alert(message);
+      if (customerMatched) message += ' Customer matched existing.';
+      else message += ' New customer created.';
+      if (equipmentMatched) message += ' Unit matched existing.';
+      else if (result?.equipmentData) message += ' New unit created.';
+      setSnackbar({ open: true, message, severity: 'success' });
     } catch (err) {
       setCreateError(err.message || 'Failed to create job file');
     } finally {
@@ -200,28 +203,45 @@ export default function App() {
     }
   }, [intake]);
 
+  const handleCloseSnackbar = () => setSnackbar((s) => ({ ...s, open: false }));
+
+  const snackbarEl = (
+    <Snackbar open={snackbar.open} autoHideDuration={6000} onClose={handleCloseSnackbar} anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}>
+      <Alert onClose={handleCloseSnackbar} severity={snackbar.severity} variant="filled" sx={{ width: '100%' }}>
+        {snackbar.message}
+      </Alert>
+    </Snackbar>
+  );
+
   if (!authChecked) {
     return (
-      <div className={styles.app}>
-        <div className={styles.welcome} style={{ padding: 24 }}>
-          <p>Loading…</p>
+      <>
+        <div className={styles.app}>
+          <div className={styles.welcome} style={{ padding: 24 }}>
+            <p>Loading…</p>
+          </div>
         </div>
-      </div>
+        {snackbarEl}
+      </>
     );
   }
 
   if (!authenticated) {
     return (
-      <div className={styles.app}>
-        <Login onSuccess={() => setAuthenticated(true)} />
-      </div>
+      <>
+        <div className={styles.app}>
+          <Login onSuccess={() => setAuthenticated(true)} />
+        </div>
+        {snackbarEl}
+      </>
     );
   }
 
   if (screen === 'welcome') {
     return (
-      <div className={styles.app}>
-        <div className={styles.welcome}>
+      <>
+        <div className={styles.app}>
+          <div className={styles.welcome}>
           <button type="button" className={styles.signOutBtn} onClick={() => { logout(); setAuthenticated(false); }}>
             Sign out
           </button>
@@ -234,62 +254,73 @@ export default function App() {
           </button>
         </div>
       </div>
+        {snackbarEl}
+      </>
     );
   }
 
   if (screen === 'capture') {
     return (
-      <div className={styles.app}>
-        <StepWizard
-          stepIndex={stepIndex}
-          photos={photos}
-          onPhoto={handlePhoto}
-          onSkip={() => {}}
-          onNext={handleNext}
-          onBack={handleBack}
-        />
-      </div>
+      <>
+        <div className={styles.app}>
+          <StepWizard
+            stepIndex={stepIndex}
+            photos={photos}
+            onPhoto={handlePhoto}
+            onSkip={() => {}}
+            onNext={handleNext}
+            onBack={handleBack}
+          />
+        </div>
+        {snackbarEl}
+      </>
     );
   }
 
   if (screen === 'processing') {
     return (
-      <div className={styles.app}>
-        <div className={styles.processing}>
-          <h1 className={styles.processingTitle}>Reading your photos…</h1>
-          <div className={styles.progressWrap}>
-            <div className={styles.progressBar} style={{ width: `${ocrProgress * 100}%` }} />
+      <>
+        <div className={styles.app}>
+          <div className={styles.processing}>
+            <h1 className={styles.processingTitle}>Reading your photos…</h1>
+            <div className={styles.progressWrap}>
+              <div className={styles.progressBar} style={{ width: `${ocrProgress * 100}%` }} />
+            </div>
+            <p className={styles.processingDesc}>Extracting text for accuracy.</p>
           </div>
-          <p className={styles.processingDesc}>Extracting text for accuracy.</p>
         </div>
-      </div>
+        {snackbarEl}
+      </>
     );
   }
 
   if (screen === 'review') {
     return (
-      <div className={styles.app}>
-        {processingError && (
-          <p className={styles.createError} role="alert">
-            {processingError}
-          </p>
-        )}
-        <IntakeReview
-          data={intake}
-          onChange={handleIntakeChange}
-          onCreateIntake={handleCreateIntake}
-          creating={creating}
-          createError={createError}
-          onStartOver={() => {
-            setCreateError('');
-            setProcessingError('');
-            setStepIndex(0);
-            setPhotos({});
-            setIntake(INITIAL_INTAKE);
-            setScreen('welcome');
-          }}
-        />
-      </div>
+      <>
+        <div className={styles.app}>
+          {processingError && (
+            <p className={styles.createError} role="alert">
+              {processingError}
+            </p>
+          )}
+          <IntakeReview
+            data={intake}
+            onChange={handleIntakeChange}
+            onCreateIntake={handleCreateIntake}
+            creating={creating}
+            createError={createError}
+            onStartOver={() => {
+              setCreateError('');
+              setProcessingError('');
+              setStepIndex(0);
+              setPhotos({});
+              setIntake(INITIAL_INTAKE);
+              setScreen('welcome');
+            }}
+          />
+        </div>
+        {snackbarEl}
+      </>
     );
   }
 
