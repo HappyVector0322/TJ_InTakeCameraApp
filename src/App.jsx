@@ -305,6 +305,7 @@ export default function App() {
           )}
           <IntakeReview
             data={intake}
+            photos={photos}
             onChange={handleIntakeChange}
             onCreateIntake={handleCreateIntake}
             creating={creating}
