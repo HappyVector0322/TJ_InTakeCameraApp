@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import ReactDOM from 'react-dom';
 import Box from '@mui/material/Box';
 import Paper from '@mui/material/Paper';
@@ -7,9 +7,15 @@ import MenuItem from '@mui/material/MenuItem';
 import Autocomplete from '@mui/material/Autocomplete';
 import Button from '@mui/material/Button';
 import IconButton from '@mui/material/IconButton';
+import Dialog from '@mui/material/Dialog';
+import DialogTitle from '@mui/material/DialogTitle';
+import DialogContent from '@mui/material/DialogContent';
+import DialogActions from '@mui/material/DialogActions';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import styles from './IntakeReview.module.css';
-import { getCustomersList } from '../api/client';
+import { getCustomersList, checkExistingUnit, findEquipmentByVinOrLicense, getEquipmentList } from '../api/client';
+import { decodeVIN } from '../utils/vinDecode';
+import { validateVIN } from '../utils/vinValidation';
 
 const US_STATE_CODES = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA',
@@ -187,15 +193,117 @@ function FullScreenImageViewer({ open, src, alt, onClose }) {
   return ReactDOM.createPortal(content, document.body);
 }
 
-export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, creating, createError, onStartOver }) {
+export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, creating, createError, onStartOver, onReCaptureVIN }) {
   const [customerOptions, setCustomerOptions] = useState([]);
+  const [equipmentOptions, setEquipmentOptions] = useState([]);
   const [fullScreenImage, setFullScreenImage] = useState({ open: false, src: null, alt: '' });
+  const [vinDecodeLoading, setVinDecodeLoading] = useState(false);
+  const [vinDecodeError, setVinDecodeError] = useState('');
+  const [existingUnitDialog, setExistingUnitDialog] = useState(null); // { companyName, unitNumber } when match found
+  const [existingUnitChecked, setExistingUnitChecked] = useState(false);
+  const [forceCreateNewUnit, setForceCreateNewUnit] = useState(false);
+  const unitPreselected = React.useRef(false);
 
   useEffect(() => {
     getCustomersList()
       .then((list) => setCustomerOptions(list))
       .catch(() => setCustomerOptions([]));
   }, []);
+
+  // Equipment list for Unit dropdown: fetch when we have customer (match companyName)
+  const normalize = (s) => (s || '').trim().toLowerCase().replace(/\s+/g, '');
+  const customerId = React.useMemo(() => {
+    const company = normalize(data.companyName);
+    if (!company) return null;
+    const c = customerOptions.find((x) => normalize(x.name) === company);
+    return c?._id || null;
+  }, [data.companyName, customerOptions]);
+
+  useEffect(() => {
+    if (!customerId) {
+      setEquipmentOptions([]);
+      return;
+    }
+    getEquipmentList(customerId)
+      .then((list) => setEquipmentOptions(list))
+      .catch(() => setEquipmentOptions([]));
+  }, [customerId]);
+
+  // Pre-select Unit when captured VIN/license matches existing equipment (TJ: "Uni# should be pre-select as SJ-18")
+  useEffect(() => {
+    const vin = (data.vin || '').trim();
+    const licensePlate = (data.licensePlate || '').trim();
+    const licenseRegion = (data.licenseRegion || '').trim();
+    const companyName = (data.companyName || '').trim();
+    if (!vin && !licensePlate) return;
+    if (unitPreselected.current) return;
+    let cancelled = false;
+    findEquipmentByVinOrLicense(vin, licensePlate, licenseRegion, companyName)
+      .then((result) => {
+        if (cancelled) return;
+        if (result?.equipment?.unit) {
+          onChange('unitNumber', result.equipment.unit);
+          unitPreselected.current = true;
+        } else {
+          // No match: set Unit# as empty
+          onChange('unitNumber', '');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [data.vin, data.licensePlate, data.licenseRegion, data.companyName]);
+
+  // Live VIN decode on last screen (TJ: "live vin decode in the intake camera last screen")
+  const vinForDecode = (data.vin || '').trim();
+  const lastDecodedVin = React.useRef('');
+  useEffect(() => {
+    if (vinForDecode.length !== 17) {
+      lastDecodedVin.current = '';
+      setVinDecodeError('');
+      return;
+    }
+    if (lastDecodedVin.current === vinForDecode) return;
+    lastDecodedVin.current = vinForDecode;
+    let cancelled = false;
+    setVinDecodeLoading(true);
+    setVinDecodeError('');
+    decodeVIN(vinForDecode)
+      .then((decoded) => {
+        if (cancelled) return;
+        setVinDecodeLoading(false);
+        if (decoded) {
+          if (decoded.year) onChange('year', decoded.year);
+          if (decoded.make) onChange('make', decoded.make);
+          if (decoded.model) onChange('model', decoded.model);
+        } else {
+          setVinDecodeError('Decode failed or VIN not found');
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setVinDecodeLoading(false);
+          setVinDecodeError('Decode failed');
+        }
+      });
+    return () => { cancelled = true; };
+  }, [vinForDecode]);
+
+  // Existing unit check: "If company name and unit # match an existing entry then need to ask..."
+  const checkExisting = useCallback(async () => {
+    const company = (data.companyName || '').trim();
+    const unit = (data.unitNumber || '').trim();
+    if (!company || !unit) return;
+    const result = await checkExistingUnit(company, unit);
+    if (result.exists) {
+      setExistingUnitDialog({ companyName: company, unitNumber: unit });
+    }
+    setExistingUnitChecked(true);
+  }, [data.companyName, data.unitNumber]);
+
+  useEffect(() => {
+    if (!existingUnitChecked && (data.companyName || '').trim() && (data.unitNumber || '').trim()) {
+      checkExisting();
+    }
+  }, [existingUnitChecked, data.companyName, data.unitNumber, checkExisting]);
 
   const licenseRegionValue = data.licenseRegion
     ? { label: data.licenseRegion, code: data.licenseRegion }
@@ -211,6 +319,42 @@ export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, crea
     }
   };
 
+  const handleSubmit = () => {
+    onCreateIntake(forceCreateNewUnit);
+  };
+
+  const handleExistingUnitYes = () => {
+    setExistingUnitDialog(null);
+    setForceCreateNewUnit(false);
+  };
+
+  const handleExistingUnitNo = () => {
+    setExistingUnitDialog(null);
+    setForceCreateNewUnit(true);
+  };
+
+  const handleDecodeVIN = useCallback(async () => {
+    const vin = (data.vin || '').trim();
+    if (vin.length !== 17) return;
+    setVinDecodeLoading(true);
+    setVinDecodeError('');
+    try {
+      const decoded = await decodeVIN(vin);
+      setVinDecodeLoading(false);
+      if (decoded) {
+        if (decoded.year) onChange('year', decoded.year);
+        if (decoded.make) onChange('make', decoded.make);
+        if (decoded.model) onChange('model', decoded.model);
+        setVinDecodeError('');
+      } else {
+        setVinDecodeError('Decode failed or VIN not found');
+      }
+    } catch {
+      setVinDecodeLoading(false);
+      setVinDecodeError('Decode failed');
+    }
+  }, [data.vin, onChange]);
+
   return (
     <Box className={styles.wrapper}>
       <Paper elevation={0} className={styles.card} sx={{ bgcolor: 'background.paper', border: '1px solid', borderColor: 'divider' }}>
@@ -224,7 +368,7 @@ export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, crea
           className={styles.form}
           onSubmit={(e) => {
             e.preventDefault();
-            if (!creating) onCreateIntake();
+            if (!creating) handleSubmit();
           }}
         >
           <Box className={styles.fieldWithImage}>
@@ -277,6 +421,28 @@ export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, crea
           </Box>
           <Box className={styles.fieldWithImage}>
             <Autocomplete
+              freeSolo
+              options={equipmentOptions.map((eq) => ({ unit: eq.unit || '', _id: eq._id })).filter((o) => o.unit)}
+              getOptionLabel={(opt) => (typeof opt === 'string' ? opt : opt?.unit || '')}
+              value={data.unitNumber ?? ''}
+              onChange={(_, newValue) => onChange('unitNumber', typeof newValue === 'string' ? newValue : (newValue?.unit ?? ''))}
+              inputValue={data.unitNumber ?? ''}
+              onInputChange={(_, val) => onChange('unitNumber', val ?? '')}
+              isOptionEqualToValue={(opt, val) => (typeof val === 'string' ? opt?.unit === val : opt?.unit === val?.unit)}
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  label="Unit number"
+                  placeholder="Select existing or enter new unit #"
+                  autoComplete="off"
+                  sx={{ '& .MuiInputBase-root': { borderRadius: 2 } }}
+                  size="medium"
+                />
+              )}
+            />
+          </Box>
+          <Box className={styles.fieldWithImage}>
+            <Autocomplete
               options={US_STATE_CODES.map((code) => ({ label: code, code }))}
               value={licenseRegionValue}
               onChange={(_, val) => onChange('licenseRegion', val?.code ?? '')}
@@ -317,6 +483,60 @@ export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, crea
               sx={{ '& .MuiInputBase-root': { borderRadius: 2 } }}
               size="medium"
             />
+            {/* VIN verify/decode/edit: validation + live decode (interactive: validate in real time, re-capture option) */}
+            <Box className={styles.vinVerifyRow}>
+              {vinDecodeLoading && <span className={styles.vinDecodeStatus}>Decoding VIN…</span>}
+              {vinDecodeError && <span className={styles.vinDecodeError}>{vinDecodeError}</span>}
+              {!vinDecodeLoading && vinForDecode.length === 17 && (() => {
+                const validation = validateVIN(vinForDecode);
+                if (validation.valid) return <span className={styles.vinDecodeOk}>VIN valid ✓ – Verify and edit below if needed</span>;
+                return <span className={styles.vinDecodeError} role="alert">{validation.error}</span>;
+              })()}
+              {!vinDecodeLoading && !vinDecodeError && vinForDecode.length > 0 && vinForDecode.length !== 17 && <span className={styles.vinDecodeError}>Enter 17 characters</span>}
+            </Box>
+            <Box sx={{ display: 'flex', gap: 1, mt: 0.5, flexWrap: 'wrap' }}>
+              <Button
+                type="button"
+                size="small"
+                variant="outlined"
+                onClick={handleDecodeVIN}
+                disabled={vinForDecode.length !== 17}
+                className={styles.reCaptureBtn}
+              >
+                Decode VIN
+              </Button>
+              {onReCaptureVIN && (
+                <Button type="button" size="small" onClick={onReCaptureVIN} className={styles.reCaptureBtn}>
+                  Re-capture VIN photo
+                </Button>
+              )}
+            </Box>
+            <Box className={styles.yearMakeModelRow}>
+              <TextField
+                label="Year"
+                value={data.year ?? ''}
+                onChange={(e) => onChange('year', e.target.value)}
+                placeholder="Year"
+                size="small"
+                sx={{ flex: 1, minWidth: 0, '& .MuiInputBase-root': { borderRadius: 2 } }}
+              />
+              <TextField
+                label="Make"
+                value={data.make ?? ''}
+                onChange={(e) => onChange('make', e.target.value)}
+                placeholder="Make"
+                size="small"
+                sx={{ flex: 1, minWidth: 0, '& .MuiInputBase-root': { borderRadius: 2 } }}
+              />
+              <TextField
+                label="Model"
+                value={data.model ?? ''}
+                onChange={(e) => onChange('model', e.target.value)}
+                placeholder="Model"
+                size="small"
+                sx={{ flex: 1, minWidth: 0, '& .MuiInputBase-root': { borderRadius: 2 } }}
+              />
+            </Box>
             <FieldImage src={photos.vin} alt="VIN" onOpenFullScreen={(src, alt) => setFullScreenImage({ open: true, src, alt })} />
           </Box>
           <Box className={styles.fieldWithImage}>
@@ -360,6 +580,20 @@ export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, crea
         alt={fullScreenImage.alt}
         onClose={() => setFullScreenImage({ open: false, src: null, alt: '' })}
       />
+      <Dialog open={!!existingUnitDialog} onClose={handleExistingUnitYes} aria-labelledby="existing-unit-dialog-title">
+        <DialogTitle id="existing-unit-dialog-title">Unit already exists</DialogTitle>
+        <DialogContent>
+          {existingUnitDialog && (
+            <p>
+              Unit <strong>{existingUnitDialog.unitNumber}</strong> already exists for <strong>{existingUnitDialog.companyName}</strong>. Use the same one?
+            </p>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleExistingUnitNo} color="primary">No (create new unit)</Button>
+          <Button onClick={handleExistingUnitYes} variant="contained" color="primary">Yes</Button>
+        </DialogActions>
+      </Dialog>
       {onStartOver && (
         <Button
           type="button"

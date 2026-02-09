@@ -12,3 +12,6 @@ export const PLATE_RECOGNIZER_API_TOKEN = '877866e9d8d7040725188a3b6469f3234c47d
 export const USDOT_OCR_API_TOKEN = '9845f71a9eccd3bfbdfb7731b376cbcd8e52ddbc';
 
 export const TOKEN_KEY = 'serviceToken';
+
+/** Optional: after intake job is created, open job file app and go to description. Set REACT_APP_JOB_FILE_APP_URL (e.g. http://localhost:3000 or TJ_99glide URL). */
+export const JOB_FILE_APP_URL = "https://tj-job-file-app.vercel.app/dashboard";

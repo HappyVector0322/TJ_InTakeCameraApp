@@ -44,23 +44,27 @@ export async function login(email, password) {
 
 /**
  * Create job from intake with match-or-create customer/equipment.
- * POST jobFile/api/job/intake -> { intake: { companyName, dotOrMc, licensePlate, licenseRegion, vin, odometer } }
- * Backend matches existing customers (by company name + optional DOT/MC) and equipment (by VIN or license+region),
- * creates new only when no match. Returns { newJob, customerData, equipmentData, customerMatched, equipmentMatched }.
- * Intake shape matches 99workflow job file: carrierIdType (dot/ca/mc) + carrierIdNum.
+ * POST jobFile/api/job/intake -> { intake: { companyName, carrierIdType, carrierIdNum, unitNumber, licensePlate, licenseRegion, vin, year, make, model, odometer }, createNewUnit?: boolean }
+ * Backend matches existing customers and equipment (by VIN, license+region, or customer+unit); creates new only when no match.
+ * Returns { newJob, customerData, equipmentData, customerMatched, equipmentMatched }.
  */
-export async function createJobFromIntake(intake) {
+export async function createJobFromIntake(intake, createNewUnit = false) {
   try {
     const { data } = await client.post('api/job/intake', {
       intake: {
         companyName: intake.companyName || '',
         carrierIdType: intake.carrierIdType || 'dot',
         carrierIdNum: intake.carrierIdNum || '',
+        unitNumber: (intake.unitNumber || '').trim(),
         licensePlate: intake.licensePlate || '',
         licenseRegion: intake.licenseRegion || '',
-        vin: intake.vin || '',
+        vin: (intake.vin || '').trim(),
+        year: (intake.year || '').trim(),
+        make: (intake.make || '').trim(),
+        model: (intake.model || '').trim(),
         odometer: intake.odometer || '',
       },
+      createNewUnit: !!createNewUnit,
     });
     if (data.error) {
       throw new Error(data.error);
@@ -69,6 +73,65 @@ export async function createJobFromIntake(intake) {
   } catch (err) {
     const msg = err.response?.data?.error || err.response?.data?.message || err.message || 'Failed to create job file';
     throw new Error(msg);
+  }
+}
+
+/**
+ * Check if a unit number already exists for the given company (for "Unit X already exists for Xyz. Use same one?").
+ * POST jobFile/api/job/checkExistingUnit -> { companyName, unitNumber } -> { exists: boolean, companyName?: string, unitNumber?: string }
+ */
+export async function checkExistingUnit(companyName, unitNumber) {
+  try {
+    const { data } = await client.post('api/job/checkExistingUnit', {
+      companyName: (companyName || '').trim(),
+      unitNumber: (unitNumber || '').trim(),
+    });
+    if (data.error) {
+      return { exists: false };
+    }
+    return data.data || { exists: false };
+  } catch {
+    return { exists: false };
+  }
+}
+
+/**
+ * Find equipment by VIN or license+region (for Unit dropdown pre-selection).
+ * POST /jobFile/api/job/findEquipmentByVinOrLicense
+ */
+export async function findEquipmentByVinOrLicense(vin, licensePlate, licenseRegion, companyName) {
+  try {
+    const { data } = await client.post('api/job/findEquipmentByVinOrLicense', {
+      vin: (vin || '').trim(),
+      licensePlate: (licensePlate || '').trim(),
+      licenseRegion: (licenseRegion || '').trim(),
+      companyName: (companyName || '').trim(),
+    });
+    if (data.error) return { equipment: null };
+    return data.data || { equipment: null };
+  } catch {
+    return { equipment: null };
+  }
+}
+
+/**
+ * Fetch equipment list by customer. GET /api/equipments/list/:customerId
+ */
+export async function getEquipmentList(customerId) {
+  if (!customerId) return [];
+  try {
+    const token = getToken();
+    const res = await axios.get(`${API_URI}/api/equipments/list/${customerId}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': true,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+    const data = res.data?.data ?? res.data;
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
   }
 }
 

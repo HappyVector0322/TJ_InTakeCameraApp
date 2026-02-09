@@ -161,6 +161,43 @@
   align-items: stretch;
 }
 
+.yearMakeModelRow {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.yearMakeModelRow > * {
+  flex: 1;
+  min-width: 0;
+}
+
+.vinVerifyRow {
+  margin-top: 4px;
+  min-height: 20px;
+}
+
+.vinDecodeStatus {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.vinDecodeError {
+  font-size: 13px;
+  color: #ef4444;
+}
+
+.vinDecodeOk {
+  font-size: 13px;
+  color: var(--success, #06d6a0);
+}
+
+.reCaptureBtn {
+  text-transform: none;
+  font-size: 13px;
+}
+
 .selectDotType {
   flex: 0 0 100px;
   padding: 14px 12px;

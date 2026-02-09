@@ -38,9 +38,11 @@ function centerCropToAspectRatio(img, overlayType) {
 }
 
 /**
- * Contrast, brightness and sharpen – same as job file enhanceImage.
+ * Contrast, brightness and sharpen. For VIN we use stronger contrast to improve OCR accuracy.
+ * @param {HTMLImageElement|HTMLCanvasElement} img
+ * @param {'license'|'vin'} [overlayType] - 'vin' uses higher contrast for character clarity
  */
-function enhanceImage(img) {
+function enhanceImage(img, overlayType) {
   const canvas = document.createElement('canvas');
   canvas.width = img.width;
   canvas.height = img.height;
@@ -48,8 +50,8 @@ function enhanceImage(img) {
   ctx.drawImage(img, 0, 0);
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
-  const contrast = 1.2;
-  const brightness = 0.1;
+  const contrast = overlayType === 'vin' ? 1.35 : 1.2;
+  const brightness = overlayType === 'vin' ? 0.05 : 0.1;
   for (let i = 0; i < data.length; i += 4) {
     for (let j = 0; j < 3; j++) {
       data[i + j] = Math.min(255, Math.max(0,
@@ -119,7 +121,7 @@ export async function processForOCR(dataUrl, overlayType) {
   try {
     const img = await loadImage(dataUrl);
     let processed = centerCropToAspectRatio(img, overlayType);
-    processed = enhanceImage(processed);
+    processed = enhanceImage(processed, overlayType);
     if (overlayType === 'license') {
       processed = resizeMaxLongSide(processed, 800);
     }
@@ -138,7 +140,7 @@ export async function processForOCR(dataUrl, overlayType) {
 export async function processCroppedForOCR(dataUrl, overlayType) {
   try {
     const img = await loadImage(dataUrl);
-    let processed = enhanceImage(img);
+    let processed = enhanceImage(img, overlayType);
     if (overlayType === 'license') {
       processed = resizeMaxLongSide(processed, 800);
     }

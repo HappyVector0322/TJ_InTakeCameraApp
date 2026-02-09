@@ -2,13 +2,16 @@ import React, { useState, useCallback, useEffect, useRef } from 'react';
 import Snackbar from '@mui/material/Snackbar';
 import Alert from '@mui/material/Alert';
 import { STEPS, STEP_IDS } from './steps';
+
+const VIN_STEP_INDEX = STEP_IDS.indexOf('vin');
 import { StepWizard } from './components/StepWizard';
 import { IntakeReview } from './components/IntakeReview';
 import { Login } from './components/Login';
 import { getToken, logout, createJobFromIntake } from './api/client';
-import { TOKEN_KEY } from './config';
+import { TOKEN_KEY, JOB_FILE_APP_URL } from './config';
 import { extractTextFromImage, parseCompanyOrDotMc } from './utils/ocr';
 import { licensePlateOCR, extractVINFromBase64, companyNameOCR } from './utils/plateVinOcr';
+import { correctVIN } from './utils/vinValidation';
 import { dotMcOCR, odometerOCR } from './utils/dotOdometerOcr';
 import styles from './App.module.css';
 
@@ -17,9 +20,13 @@ const INITIAL_INTAKE = {
   companyName: '',
   carrierIdType: 'dot',
   carrierIdNum: '',
+  unitNumber: '',
   licensePlate: '',
   licenseRegion: '',
   vin: '',
+  year: '',
+  make: '',
+  model: '',
   odometer: '',
 };
 
@@ -57,6 +64,7 @@ export default function App() {
   }, []);
   const [screen, setScreen] = useState('welcome'); // welcome | capture | processing | review
   const [stepIndex, setStepIndex] = useState(0);
+  const [reCapturingVIN, setReCapturingVIN] = useState(false); // true = only VIN capture, then return to review
   const [photos, setPhotos] = useState({});
   const [intake, setIntake] = useState(INITIAL_INTAKE);
   const [creating, setCreating] = useState(false);
@@ -123,12 +131,15 @@ export default function App() {
             // Do NOT fall back to Tesseract for license – it often produces wrong results (e.g. "303430" from numbers in image).
             // If PlateRecognizer fails, leave plate/region empty so user can type/select; same approach as VIN.
           } else if (stepId === 'vin') {
-            const img = currentPhotos[stepId]; // already cropped (greenbox) on confirm page
+            const img = currentPhotos[stepId]; // already cropped and preprocessed (greenbox) on confirm page
             setOcrProgress(done / stepsWithPhotos.length);
             const vinResult = await extractVINFromBase64(img);
-            if (vinResult) next.vin = vinResult;
-            // Do NOT fall back to Tesseract for VIN when backend fails – it produces wrong results (e.g. wrong length/prefix).
-            // If backend fails, leave VIN empty so user can type it; 99workflow/TJ_99glide use the same backend API only.
+            if (vinResult) {
+              // Apply VIN validation rules: auto-correct I/O/Q and check-digit errors (TJ/Alex: rule-based corrections)
+              next.vin = correctVIN(vinResult);
+            }
+            // Do NOT fall back to Tesseract for VIN when backend fails – it produces wrong results.
+            // If backend fails, leave VIN empty so user can type it.
           } else if (stepId === 'dotmc') {
             setOcrProgress(done / stepsWithPhotos.length);
             const dotResult = await dotMcOCR(currentPhotos[stepId]);
@@ -177,11 +188,11 @@ export default function App() {
     setIntake((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  const handleCreateIntake = useCallback(async () => {
+  const handleCreateIntake = useCallback(async (createNewUnit = false) => {
     setCreating(true);
     setCreateError('');
     try {
-      const result = await createJobFromIntake(intake);
+      const result = await createJobFromIntake(intake, createNewUnit);
       const jobId = result?.newJob?._id;
       const customerMatched = result?.customerMatched === true;
       const equipmentMatched = result?.equipmentMatched === true;
@@ -196,6 +207,11 @@ export default function App() {
       if (equipmentMatched) message += ' Unit matched existing.';
       else if (result?.equipmentData) message += ' New unit created.';
       setSnackbar({ open: true, message, severity: 'success' });
+      // Open job file app and go to description (TJ: "open the job file and go to description once submitted")
+      if (jobId && JOB_FILE_APP_URL) {
+        const url = `${JOB_FILE_APP_URL.replace(/\/$/, '')}?openJob=${jobId}&focus=description`;
+        window.open(url, '_blank', 'noopener,noreferrer');
+      }
     } catch (err) {
       setCreateError(err.message || 'Failed to create job file');
     } finally {
@@ -269,7 +285,24 @@ export default function App() {
             onPhoto={handlePhoto}
             onSkip={() => {}}
             onNext={handleNext}
-            onBack={handleBack}
+            onBack={reCapturingVIN ? () => { setReCapturingVIN(false); setScreen('review'); } : handleBack}
+            reCapturingVIN={reCapturingVIN}
+            onReCaptureComplete={async (stepId, dataUrl) => {
+              if (stepId !== 'vin') return;
+              setReCapturingVIN(false);
+              if (dataUrl) {
+                setPhotos((prev) => ({ ...prev, vin: dataUrl }));
+                setScreen('processing');
+                try {
+                  const vinResult = await extractVINFromBase64(dataUrl);
+                  if (vinResult) setIntake((prev) => ({ ...prev, vin: correctVIN(vinResult) }));
+                } catch {
+                  // keep existing vin on error
+                }
+              }
+              setScreen('review');
+              processingStarted.current = false;
+            }}
           />
         </div>
         {snackbarEl}
@@ -317,6 +350,11 @@ export default function App() {
               setPhotos({});
               setIntake(INITIAL_INTAKE);
               setScreen('welcome');
+            }}
+            onReCaptureVIN={() => {
+              setReCapturingVIN(true);
+              setScreen('capture');
+              setStepIndex(VIN_STEP_INDEX);
             }}
           />
         </div>
