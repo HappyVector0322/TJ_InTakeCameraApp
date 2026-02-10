@@ -61,19 +61,55 @@ export function CameraCapture({ onCapture, onSkip, onBack, onNext, step, optiona
     }
   }, []);
 
-  // Torch control (same idea as 99workflow)
+  // Torch control — robust for Android/Samsung (e.g. Galaxy Xcover Pro)
+  const torchTrackRef = useRef(null);
   useEffect(() => {
-    if (!ready || !flash) return;
-    const video = webcamRef.current?.video;
-    const stream = video?.srcObject;
-    const track = stream?.getVideoTracks?.()?.[0];
-    if (track?.getCapabilities?.()?.torch) {
-      track.applyConstraints({ advanced: [{ torch: true }] }).catch(() => {});
+    if (!flash) {
+      const turnOff = (track) => {
+        if (!track?.getCapabilities?.()?.torch) return;
+        track.applyConstraints({ torch: false }).catch(() => {});
+        track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
+      };
+      if (torchTrackRef.current) {
+        turnOff(torchTrackRef.current);
+        torchTrackRef.current = null;
+      }
+      return;
     }
+    if (!ready) return;
+
+    const applyTorch = (track, on) => {
+      if (!track?.getCapabilities?.()?.torch) return false;
+      const value = !!on;
+      // Some Android/Samsung devices need the simple form first
+      return track
+        .applyConstraints({ torch: value })
+        .then(() => true)
+        .catch(() => track.applyConstraints({ advanced: [{ torch: value }] }).then(() => true))
+        .catch(() => false);
+    };
+
+    const tryTorch = () => {
+      const video = webcamRef.current?.video;
+      const stream = video?.srcObject;
+      const track = stream?.getVideoTracks?.()?.[0];
+      if (!track) return;
+      torchTrackRef.current = track;
+      applyTorch(track, true);
+    };
+
+    tryTorch();
+    // Retry after a short delay — on some devices (e.g. Samsung Xcover Pro) srcObject isn't ready immediately
+    const t = setTimeout(tryTorch, 200);
+
     return () => {
+      clearTimeout(t);
+      const track = torchTrackRef.current;
       if (track?.getCapabilities?.()?.torch) {
+        track.applyConstraints({ torch: false }).catch(() => {});
         track.applyConstraints({ advanced: [{ torch: false }] }).catch(() => {});
       }
+      torchTrackRef.current = null;
     };
   }, [ready, flash]);
 
