@@ -13,6 +13,7 @@ import { extractTextFromImage, parseCompanyOrDotMc } from './utils/ocr';
 import { licensePlateOCR, extractVINFromBase64, companyNameOCR } from './utils/plateVinOcr';
 import { correctVIN } from './utils/vinValidation';
 import { dotMcOCR, odometerOCR } from './utils/dotOdometerOcr';
+import { parseDotAndMc } from './utils/dotMcValidation';
 import styles from './App.module.css';
 
 /** Intake shape matches 99workflow job file: carrierIdType (dot/ca/mc) + carrierIdNum for DOT/MC/CA#. */
@@ -143,12 +144,25 @@ export default function App() {
           } else if (stepId === 'dotmc') {
             setOcrProgress(done / stepsWithPhotos.length);
             const dotResult = await dotMcOCR(currentPhotos[stepId]);
-            if (dotResult?.dotOrMc) next.carrierIdNum = dotResult.dotOrMc;
-            if (!next.carrierIdNum) {
-              const text = await extractTextFromImage(currentPhotos[stepId], (p) => {
-                setOcrProgress((done + p) / stepsWithPhotos.length);
-              });
-              next.carrierIdNum = parseCompanyOrDotMc(text);
+            // Use structured { dot, mc } when OCR returns both; otherwise parse raw
+            if (dotResult?.dot || dotResult?.mc) {
+              const dot = dotResult.dot || '';
+              const mc = dotResult.mc || '';
+              next.carrierIdType = dot ? 'dot' : 'mc';
+              next.carrierIdNum = dot || mc;
+            } else {
+              let rawValue = dotResult?.dotOrMc || '';
+              if (!rawValue) {
+                const text = await extractTextFromImage(currentPhotos[stepId], (p) => {
+                  setOcrProgress((done + p) / stepsWithPhotos.length);
+                });
+                rawValue = parseCompanyOrDotMc(text) || text || '';
+              }
+              if (rawValue) {
+                const parsed = parseDotAndMc(rawValue);
+                next.carrierIdType = parsed.preferredType;
+                next.carrierIdNum = parsed.preferredNum || rawValue.replace(/\D/g, '').trim().slice(0, 15);
+              }
             }
           } else if (stepId === 'odometer') {
             setOcrProgress(done / stepsWithPhotos.length);

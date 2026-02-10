@@ -7,6 +7,7 @@
 import axios from 'axios';
 import { API_URI, USDOT_OCR_API_TOKEN } from '../config';
 import { base64ToBlob } from './captureCoveredScreenshot';
+import { parseDotAndMc } from './dotMcValidation';
 
 /** Plate Recognizer USDOT Cloud API - POST with Authorization: Token <api_token>, FormData image */
 const USDOT_API_URL = 'https://usdot.parkpow.com/api/v1/predict/';
@@ -23,7 +24,10 @@ async function dotMcViaBackend(base64DataUrl) {
       data: { base64Image: base64DataUrl.startsWith('data:') ? base64DataUrl : `data:image/jpeg;base64,${base64DataUrl}` },
       timeout: OCR_TIMEOUT_MS,
     });
-    return { dotOrMc: data?.dotOrMc ?? '' };
+    const dot = data?.dot ?? '';
+    const mc = data?.mc ?? '';
+    const dotOrMc = data?.dotOrMc ?? (dot || mc);
+    return { dot, mc, dotOrMc };
   } catch (e) {
     console.warn('DOT/MC OCR (backend) failed:', e?.message);
     return { dotOrMc: '' };
@@ -32,9 +36,9 @@ async function dotMcViaBackend(base64DataUrl) {
 
 /**
  * Run DOT# OCR via Plate Recognizer USDOT Cloud API.
+ * Returns { dot, mc, dotOrMc } — structured when both available, dotOrMc for backward compat.
+ * DOT is preferred when both exist.
  * @see https://guides.platerecognizer.com/docs/other-apps/usdot/cloud/
- * POST to usdot.parkpow.com/api/v1/predict/ with Authorization: Token <api_token>, FormData image.
- * If token not set or request fails, falls back to backend OpenAI Vision.
  */
 export async function dotMcOCR(base64DataUrl) {
   if (USDOT_OCR_API_TOKEN?.trim()) {
@@ -50,10 +54,24 @@ export async function dotMcOCR(base64DataUrl) {
         data: form,
         timeout: OCR_TIMEOUT_MS,
       });
-      const usdot = data?.USDOT ?? data?.usdot ?? data?.results?.[0]?.USDOT ?? data?.predictions?.[0]?.usdot;
-      const mc = data?.MC ?? data?.mc ?? data?.results?.[0]?.MC ?? data?.predictions?.[0]?.mc;
-      const value = (usdot && String(usdot).trim()) || (mc && String(mc).trim()) || '';
-      if (value) return { dotOrMc: value };
+      const usdotRaw = data?.USDOT ?? data?.usdot ?? data?.results?.[0]?.USDOT ?? data?.predictions?.[0]?.usdot;
+      const mcRaw = data?.MC ?? data?.mc ?? data?.results?.[0]?.MC ?? data?.predictions?.[0]?.mc;
+      const usdot = usdotRaw != null ? String(usdotRaw).trim().replace(/\D/g, '') : '';
+      const mc = mcRaw != null ? String(mcRaw).trim().replace(/\D/g, '') : '';
+      // When both returned separately, use structured; prefer DOT
+      if (usdot && mc) {
+        const dotVal = usdot.length === 7 ? usdot : usdot.slice(0, 7);
+        return { dot: dotVal, mc: mc.slice(0, 7), dotOrMc: dotVal };
+      }
+      if (usdot) {
+        // If usdot looks concatenated (e.g. 13 digits = DOT+MC), parse to extract both
+        if (usdot.length > 7) {
+          const parsed = parseDotAndMc(usdot);
+          return { dot: parsed.dot, mc: parsed.mc, dotOrMc: parsed.preferredNum || usdot.slice(0, 7) };
+        }
+        return { dot: usdot, dotOrMc: usdot };
+      }
+      if (mc) return { mc: mc.slice(0, 7), dotOrMc: mc };
     } catch (error) {
       console.warn('USDOT OCR (Plate Recognizer) failed, trying backend:', error?.message);
     }

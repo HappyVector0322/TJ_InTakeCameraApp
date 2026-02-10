@@ -16,6 +16,7 @@ import styles from './IntakeReview.module.css';
 import { getCustomersList, checkExistingUnit, findEquipmentByVinOrLicense, getEquipmentList } from '../api/client';
 import { decodeVIN } from '../utils/vinDecode';
 import { validateVIN } from '../utils/vinValidation';
+import { validateCarrierId } from '../utils/dotMcValidation';
 
 const US_STATE_CODES = [
   'AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA',
@@ -417,6 +418,18 @@ export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, crea
                 size="medium"
               />
             </Box>
+            {(() => {
+              const carrierType = data.carrierIdType ?? 'dot';
+              const carrierNum = (data.carrierIdNum ?? '').trim();
+              if (carrierType !== 'ca' && carrierNum) {
+                const validation = validateCarrierId(carrierType, carrierNum);
+                if (!validation.valid) {
+                  return <Box sx={{ mt: 0.5 }}><span className={styles.vinDecodeError} role="alert">{validation.error}</span></Box>;
+                }
+                return <Box sx={{ mt: 0.5 }}><span className={styles.vinDecodeOk}>{carrierType === 'dot' ? 'DOT# valid (7 digits)' : 'MC# valid'}</span></Box>;
+              }
+              return null;
+            })()}
             <FieldImage src={photos.dotmc} alt="DOT or MC" onOpenFullScreen={(src, alt) => setFullScreenImage({ open: true, src, alt })} />
           </Box>
           <Box className={styles.fieldWithImage}>
