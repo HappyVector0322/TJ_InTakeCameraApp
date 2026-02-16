@@ -73,11 +73,13 @@ export default function App() {
   const [ocrProgress, setOcrProgress] = useState(0);
   const [processingError, setProcessingError] = useState('');
   const processingStarted = useRef(false);
+  const odometerCroppedRef = useRef(null);
 
   const handleStart = () => {
     processingStarted.current = false;
     setProcessingError('');
     setCreateError('');
+    odometerCroppedRef.current = null;
     setScreen('capture');
   };
 
@@ -166,10 +168,24 @@ export default function App() {
             }
           } else if (stepId === 'odometer') {
             setOcrProgress(done / stepsWithPhotos.length);
-            const odometerValue = await odometerOCR(currentPhotos[stepId], (p) => {
+            const odometerResult = await odometerOCR(currentPhotos[stepId], (p) => {
               setOcrProgress((done + p) / stepsWithPhotos.length);
             });
+            const odometerValue = typeof odometerResult === 'object' ? odometerResult?.odometer : odometerResult;
             if (odometerValue) next.odometer = odometerValue;
+            if (odometerResult?.croppedImage) {
+              const dataUrl = `data:image/jpeg;base64,${odometerResult.croppedImage}`;
+              odometerCroppedRef.current = dataUrl;
+              setPhotos((prev) => ({ ...prev, odometerCropped: dataUrl }));
+              console.log('[App] Odometer cropped image set:', { 
+                hasCropped: true, 
+                dataUrlLength: dataUrl.length,
+                refSet: !!odometerCroppedRef.current 
+              });
+            } else {
+              odometerCroppedRef.current = null;
+              console.log('[App] No cropped image received from backend');
+            }
           } else if (stepId === 'company') {
             setOcrProgress(done / stepsWithPhotos.length);
             const company = await companyNameOCR(currentPhotos[stepId]);
@@ -353,6 +369,7 @@ export default function App() {
           <IntakeReview
             data={intake}
             photos={photos}
+            odometerCroppedRef={odometerCroppedRef}
             onChange={handleIntakeChange}
             onCreateIntake={handleCreateIntake}
             creating={creating}
@@ -361,6 +378,7 @@ export default function App() {
               setCreateError('');
               setProcessingError('');
               setStepIndex(0);
+              odometerCroppedRef.current = null;
               setPhotos({});
               setIntake(INITIAL_INTAKE);
               setScreen('welcome');

@@ -91,17 +91,18 @@ function stripOdometerUnit(str) {
 
 /**
  * Run odometer OCR via backend only (YOLOv9 + OpenAI Vision). Client stays light.
- * POST /api/utility/odometer-ocr with { base64Image }. Returns odometer string (digits only, no unit).
+ * POST /api/utility/odometer-ocr with { base64Image }.
+ * Returns { odometer: string, croppedImage?: string }. croppedImage is raw base64 when backend returned it (YOLO crop succeeded), for showing in review.
  * onProgress is ignored (no client-side OCR).
  */
 export async function odometerOCR(base64DataUrl, onProgress) {
   const base64 = base64DataUrl.includes(',') ? base64DataUrl.split(',')[1] : base64DataUrl;
-  if (!base64 || !base64.trim()) return '';
+  if (!base64 || !base64.trim()) return { odometer: '' };
 
   const base = (API_URI || '').replace(/\/$/, '');
   if (!base) {
     console.warn('Odometer OCR: API_URI not set. Set REACT_APP_API_URI in .env to your backend.');
-    return '';
+    return { odometer: '' };
   }
 
   try {
@@ -116,9 +117,22 @@ export async function odometerOCR(base64DataUrl, onProgress) {
       timeout: OCR_TIMEOUT_MS,
     });
     const value = data?.odometer != null ? String(data.odometer).trim() : '';
-    return stripOdometerUnit(value);
+    const odometer = stripOdometerUnit(value);
+    const croppedImage = data?.croppedImage && typeof data.croppedImage === 'string' ? data.croppedImage : undefined;
+    
+    // Debug logging
+    if (process.env.NODE_ENV === 'development') {
+      console.log('[odometerOCR] Response:', {
+        hasOdometer: !!odometer,
+        hasCroppedImage: !!croppedImage,
+        croppedImageLength: croppedImage?.length || 0,
+        fullResponse: data
+      });
+    }
+    
+    return { odometer, croppedImage };
   } catch (e) {
     console.warn('Odometer OCR (backend) failed:', e?.response?.data || e?.message || e);
-    return '';
+    return { odometer: '' };
   }
 }

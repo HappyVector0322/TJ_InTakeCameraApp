@@ -194,7 +194,7 @@ function FullScreenImageViewer({ open, src, alt, onClose }) {
   return ReactDOM.createPortal(content, document.body);
 }
 
-export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, creating, createError, onStartOver, onReCaptureVIN }) {
+export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, onCreateIntake, creating, createError, onStartOver, onReCaptureVIN }) {
   const [customerOptions, setCustomerOptions] = useState([]);
   const [equipmentOptions, setEquipmentOptions] = useState([]);
   const [fullScreenImage, setFullScreenImage] = useState({ open: false, src: null, alt: '' });
@@ -563,7 +563,7 @@ export function IntakeReview({ data, photos = {}, onChange, onCreateIntake, crea
               sx={{ '& .MuiInputBase-root': { borderRadius: 2 } }}
               size="medium"
             />
-            <FieldImage src={photos.odometer} alt="Odometer" onOpenFullScreen={(src, alt) => setFullScreenImage({ open: true, src, alt })} />
+            <FieldImage src={photos.odometerCropped || (odometerCroppedRef?.current) || photos.odometer} alt="Odometer" onOpenFullScreen={(src, alt) => setFullScreenImage({ open: true, src, alt })} />
           </Box>
           <Button
             type="submit"
