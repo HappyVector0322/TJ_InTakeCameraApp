@@ -4,13 +4,16 @@ import Alert from '@mui/material/Alert';
 import { STEPS, STEP_IDS } from './steps';
 
 const VIN_STEP_INDEX = STEP_IDS.indexOf('vin');
+const ODOMETER_STEP_INDEX = STEP_IDS.indexOf('odometer');
+const COMPANY_STEP_INDEX = STEP_IDS.indexOf('company');
 import { StepWizard } from './components/StepWizard';
 import { IntakeReview } from './components/IntakeReview';
 import { Login } from './components/Login';
-import { getToken, logout, createJobFromIntake } from './api/client';
+import { getToken, logout, createJobFromIntake, findEquipmentByVinOrLicense } from './api/client';
 import { TOKEN_KEY, JOB_FILE_APP_URL } from './config';
 import { extractTextFromImage, parseCompanyOrDotMc } from './utils/ocr';
 import { licensePlateOCR, extractVINFromBase64, companyNameOCR } from './utils/plateVinOcr';
+import { decodeVIN } from './utils/vinDecode';
 import { correctVIN } from './utils/vinValidation';
 import { dotMcOCR, odometerOCR } from './utils/dotOdometerOcr';
 import { parseDotAndMc } from './utils/dotMcValidation';
@@ -63,16 +66,18 @@ export default function App() {
     }
     setAuthChecked(true);
   }, []);
-  const [screen, setScreen] = useState('welcome'); // welcome | capture | processing | review
+  const [screen, setScreen] = useState('welcome'); // welcome | capture | processing | verifyUnit | review
   const [stepIndex, setStepIndex] = useState(0);
-  const [reCapturingVIN, setReCapturingVIN] = useState(false); // true = only VIN capture, then return to review
+  const [reCapturingVIN, setReCapturingVIN] = useState(false);
   const [photos, setPhotos] = useState({});
   const [intake, setIntake] = useState(INITIAL_INTAKE);
+  const [existingUnit, setExistingUnit] = useState(null); // { equipment, customer } when unit found by license
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const [ocrProgress, setOcrProgress] = useState(0);
   const [processingError, setProcessingError] = useState('');
   const processingStarted = useRef(false);
+  const processingCancelledRef = useRef(false);
   const odometerCroppedRef = useRef(null);
 
   const handleStart = () => {
@@ -80,6 +85,10 @@ export default function App() {
     setProcessingError('');
     setCreateError('');
     odometerCroppedRef.current = null;
+    setStepIndex(0);
+    setPhotos({});
+    setIntake(INITIAL_INTAKE);
+    setExistingUnit(null);
     setScreen('capture');
   };
 
@@ -87,7 +96,15 @@ export default function App() {
     setPhotos((prev) => ({ ...prev, [stepId]: dataUrl }));
   }, []);
 
-  const handleNext = useCallback(() => {
+  const handleNext = useCallback((photoForCurrentStep) => {
+    if (stepIndex === 0 && STEP_IDS[0] === 'license') {
+      if (photoForCurrentStep) {
+        setScreen('processing');
+      } else {
+        setStepIndex(1);
+      }
+      return;
+    }
     if (stepIndex + 1 >= STEPS.length) {
       setScreen('processing');
     } else {
@@ -96,21 +113,32 @@ export default function App() {
   }, [stepIndex]);
 
   const handleBack = useCallback(() => {
+    if (existingUnit && stepIndex === ODOMETER_STEP_INDEX) {
+      setScreen('verifyUnit');
+      return;
+    }
     if (stepIndex > 0) {
       setStepIndex((i) => i - 1);
     } else {
       setScreen('welcome');
       setStepIndex(0);
       setPhotos({});
+      setExistingUnit(null);
     }
-  }, [stepIndex]);
+  }, [stepIndex, existingUnit]);
 
   useEffect(() => {
     if (screen !== 'processing' || processingStarted.current) return;
     processingStarted.current = true;
+    processingCancelledRef.current = false;
     setProcessingError('');
+    // Use latest photos so existing-unit + odometer path isn't treated as license-only (which would loop back to Unit found)
     const currentPhotos = { ...photos };
     const stepsWithPhotos = STEP_IDS.filter((id) => currentPhotos[id]);
+
+    const cleanup = () => {
+      processingCancelledRef.current = true;
+    };
     if (stepsWithPhotos.length === 0) {
       setIntake(INITIAL_INTAKE);
       setScreen('review');
@@ -119,34 +147,113 @@ export default function App() {
       return;
     }
 
-    let done = 0;
-    const next = { ...INITIAL_INTAKE };
+    const isLicenseOnly = stepsWithPhotos.length === 1 && stepsWithPhotos[0] === 'license';
+    const isExistingUnitOdometer = existingUnit && stepsWithPhotos.length === 2 && stepsWithPhotos.includes('license') && stepsWithPhotos.includes('odometer');
+    // User chose existing unit but skipped odometer (Next with no photo) → go to Review with current intake, no re-lookup
+    const isExistingUnitSkippedOdometer = existingUnit && stepsWithPhotos.length === 1 && stepsWithPhotos[0] === 'license';
 
     (async () => {
+      let next = { ...INITIAL_INTAKE };
       try {
+        if (isExistingUnitSkippedOdometer) {
+          setOcrProgress(1);
+          setScreen('review');
+          processingStarted.current = false;
+          return;
+        }
+        if (isLicenseOnly) {
+          setOcrProgress(0.2);
+          const img = currentPhotos.license;
+          const plateResult = await licensePlateOCR(img);
+          const plate = (plateResult?.licensePlateNumber || '').trim();
+          const region = (plateResult?.licenseRegion || '').trim();
+          next.licensePlate = plate;
+          next.licenseRegion = region;
+          setOcrProgress(0.5);
+          const result = await findEquipmentByVinOrLicense('', plate, region, '');
+          setOcrProgress(0.9);
+          if (processingCancelledRef.current) return;
+          if (result?.equipment) {
+            const eq = result.equipment;
+            const cust = result.customer || {};
+            setIntake({
+              ...next,
+              companyName: (cust.name || '').trim(),
+              carrierIdType: cust.carrierIdType || 'dot',
+              carrierIdNum: (cust.carrierIdNum || '').trim(),
+              unitNumber: (eq.unit || '').trim(),
+              licensePlate: plate || (eq.licensePlateNumber || '').trim(),
+              licenseRegion: region || (eq.licenseRegion || '').trim(),
+              vin: (eq.vin || '').trim(),
+              year: (eq.year || '').trim(),
+              make: (eq.make || '').trim(),
+              model: (eq.model || '').trim(),
+              odometer: '',
+            });
+            setExistingUnit({ equipment: eq, customer: cust });
+            setScreen('verifyUnit');
+          } else {
+            setIntake(next);
+            setStepIndex(1);
+            setScreen('capture');
+          }
+          setOcrProgress(1);
+          processingStarted.current = false;
+          return;
+        }
+
+        if (isExistingUnitOdometer) {
+          next = { ...intake };
+          setOcrProgress(0.5);
+          const odometerResult = await odometerOCR(currentPhotos.odometer, (p) => setOcrProgress(0.5 + p * 0.5));
+          const odometerValue = typeof odometerResult === 'object' ? odometerResult?.odometer : odometerResult;
+          if (odometerValue) next.odometer = odometerValue;
+          if (odometerResult?.croppedImage) {
+            const dataUrl = `data:image/jpeg;base64,${odometerResult.croppedImage}`;
+            odometerCroppedRef.current = dataUrl;
+            setPhotos((prev) => ({ ...prev, odometerCropped: dataUrl }));
+          } else {
+            odometerCroppedRef.current = null;
+          }
+          if (processingCancelledRef.current) return;
+          setIntake(next);
+          setScreen('review');
+          setOcrProgress(1);
+          processingStarted.current = false;
+          return;
+        }
+
+        let done = 0;
         for (const stepId of stepsWithPhotos) {
           if (stepId === 'license') {
-            const img = currentPhotos[stepId]; // already cropped (greenbox) on confirm page
+            const img = currentPhotos[stepId];
             setOcrProgress(done / stepsWithPhotos.length);
             const plateResult = await licensePlateOCR(img);
             if (plateResult?.licensePlateNumber) next.licensePlate = plateResult.licensePlateNumber;
             if (plateResult?.licenseRegion) next.licenseRegion = plateResult.licenseRegion;
-            // Do NOT fall back to Tesseract for license – it often produces wrong results (e.g. "303430" from numbers in image).
-            // If PlateRecognizer fails, leave plate/region empty so user can type/select; same approach as VIN.
           } else if (stepId === 'vin') {
-            const img = currentPhotos[stepId]; // already cropped and preprocessed (greenbox) on confirm page
+            const img = currentPhotos[stepId];
             setOcrProgress(done / stepsWithPhotos.length);
             const vinResult = await extractVINFromBase64(img);
-            if (vinResult) {
-              // Apply VIN validation rules: auto-correct I/O/Q and check-digit errors (TJ/Alex: rule-based corrections)
-              next.vin = correctVIN(vinResult);
+            if (vinResult && vinResult.vin) {
+              next.vin = correctVIN(vinResult.vin);
+              const hasYMM = vinResult.year != null || vinResult.make || vinResult.model;
+              if (hasYMM) {
+                if (vinResult.year != null) next.year = String(vinResult.year);
+                if (vinResult.make) next.make = vinResult.make;
+                if (vinResult.model) next.model = vinResult.model;
+              } else {
+                const decoded = await decodeVIN(vinResult.vin);
+                if (decoded) {
+                  if (decoded.year) next.year = String(decoded.year);
+                  if (decoded.make) next.make = decoded.make;
+                  if (decoded.model) next.model = decoded.model;
+                }
+              }
             }
-            // Do NOT fall back to Tesseract for VIN when backend fails – it produces wrong results.
-            // If backend fails, leave VIN empty so user can type it.
           } else if (stepId === 'dotmc') {
             setOcrProgress(done / stepsWithPhotos.length);
             const dotResult = await dotMcOCR(currentPhotos[stepId]);
-            // Use structured { dot, mc } when OCR returns both; otherwise parse raw
             if (dotResult?.dot || dotResult?.mc) {
               const dot = dotResult.dot || '';
               const mc = dotResult.mc || '';
@@ -177,14 +284,8 @@ export default function App() {
               const dataUrl = `data:image/jpeg;base64,${odometerResult.croppedImage}`;
               odometerCroppedRef.current = dataUrl;
               setPhotos((prev) => ({ ...prev, odometerCropped: dataUrl }));
-              console.log('[App] Odometer cropped image set:', { 
-                hasCropped: true, 
-                dataUrlLength: dataUrl.length,
-                refSet: !!odometerCroppedRef.current 
-              });
             } else {
               odometerCroppedRef.current = null;
-              console.log('[App] No cropped image received from backend');
             }
           } else if (stepId === 'company') {
             setOcrProgress(done / stepsWithPhotos.length);
@@ -196,14 +297,25 @@ export default function App() {
               });
               next.companyName = parseCompanyOrDotMc(text);
             }
+          } else if (stepId === 'unit') {
+            setOcrProgress(done / stepsWithPhotos.length);
+            const text = await extractTextFromImage(currentPhotos[stepId], (p) => {
+              setOcrProgress((done + p) / stepsWithPhotos.length);
+            });
+            const trimmed = (text || '').trim();
+            const firstLine = trimmed.split(/\n/).map((s) => s.trim()).find(Boolean);
+            const candidate = (firstLine || trimmed).replace(/\s+/g, ' ').slice(0, 20);
+            if (candidate) next.unitNumber = candidate;
           }
           done += 1;
           setOcrProgress(done / stepsWithPhotos.length);
         }
+        if (processingCancelledRef.current) return;
         setIntake(next);
         setScreen('review');
         setOcrProgress(1);
       } catch (err) {
+        if (processingCancelledRef.current) return;
         setProcessingError(err?.message || 'Reading photos failed. You can still edit and create the job.');
         setIntake(next);
         setScreen('review');
@@ -212,7 +324,8 @@ export default function App() {
         processingStarted.current = false;
       }
     })();
-  }, [screen]);
+    return cleanup;
+  }, [screen, existingUnit, intake, photos]);
 
   const handleIntakeChange = useCallback((key, value) => {
     setIntake((prev) => ({ ...prev, [key]: value }));
@@ -293,13 +406,66 @@ export default function App() {
           </button>
           <h1 className={styles.welcomeTitle}>Intake Camera</h1>
           <p className={styles.welcomeDesc}>
-            Capture company name, DOT/MC, license plate, VIN, and odometer. We’ll read the data from your photos and create a job file automatically.
+            Start with a license plate photo. If we find the unit, you’ll only need to capture the odometer. Otherwise, capture company, DOT/MC/CA, VIN, unit #, and odometer. You can always type or edit any field on the review screen.
           </p>
           <button type="button" className={styles.startBtn} onClick={handleStart}>
             Start
           </button>
         </div>
       </div>
+        {snackbarEl}
+      </>
+    );
+  }
+
+  if (screen === 'verifyUnit' && existingUnit) {
+    const eq = existingUnit.equipment;
+    const unitLabel = (eq?.unit || eq?.unitId || eq?.licensePlateNumber || eq?.vin || 'Unit').toString().trim();
+    return (
+      <>
+        <div className={styles.app}>
+          <div className={styles.welcome} style={{ padding: 24, textAlign: 'left' }}>
+            <h1 className={styles.welcomeTitle}>Unit found</h1>
+            <p className={styles.welcomeDesc}>
+              We found an existing unit for this license plate. Please verify and then take the odometer photo.
+            </p>
+            <p style={{ marginTop: 16, marginBottom: 8, fontWeight: 600 }}>Unit: {unitLabel}</p>
+            {existingUnit.customer?.name && <p style={{ marginBottom: 24 }}>Company: {existingUnit.customer.name}</p>}
+            <p style={{ marginBottom: 12, fontSize: 14, color: 'var(--text-secondary, #666)' }}>
+              Use this unit or skip and enter as new?
+            </p>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 280 }}>
+              <button
+                type="button"
+                className={styles.signOutBtn}
+                style={{ margin: 0 }}
+                onClick={() => {
+                  setExistingUnit(null);
+                  setIntake((prev) => ({
+                    ...INITIAL_INTAKE,
+                    licensePlate: prev.licensePlate,
+                    licenseRegion: prev.licenseRegion,
+                  }));
+                  setPhotos((prev) => ({ license: prev.license }));
+                  setStepIndex(COMPANY_STEP_INDEX);
+                  setScreen('capture');
+                }}
+              >
+                Skip — enter as new unit
+              </button>
+              <button
+                type="button"
+                className={styles.startBtn}
+                onClick={() => {
+                  setStepIndex(ODOMETER_STEP_INDEX);
+                  setScreen('capture');
+                }}
+              >
+                Yes, take odometer photo
+              </button>
+            </div>
+          </div>
+        </div>
         {snackbarEl}
       </>
     );
@@ -322,16 +488,37 @@ export default function App() {
               setReCapturingVIN(false);
               if (dataUrl) {
                 setPhotos((prev) => ({ ...prev, vin: dataUrl }));
-                setScreen('processing');
+                // Do not set screen to 'processing' – that would re-run the full OCR effect and call detect-vin-image again (causing duplicate call and possible null overwrite).
                 try {
                   const vinResult = await extractVINFromBase64(dataUrl);
-                  if (vinResult) setIntake((prev) => ({ ...prev, vin: correctVIN(vinResult) }));
+                  if (vinResult && vinResult.vin) {
+                    const hasYMM = vinResult.year != null || vinResult.make || vinResult.model;
+                    let yearVal = '', makeVal = '', modelVal = '';
+                    if (hasYMM) {
+                      yearVal = vinResult.year != null ? String(vinResult.year) : '';
+                      makeVal = vinResult.make ?? '';
+                      modelVal = vinResult.model ?? '';
+                    } else {
+                      const decoded = await decodeVIN(vinResult.vin);
+                      if (decoded) {
+                        yearVal = decoded.year ? String(decoded.year) : '';
+                        makeVal = decoded.make ?? '';
+                        modelVal = decoded.model ?? '';
+                      }
+                    }
+                    setIntake((prev) => ({
+                      ...prev,
+                      vin: correctVIN(vinResult.vin),
+                      year: yearVal || prev.year,
+                      make: makeVal || prev.make,
+                      model: modelVal || prev.model,
+                    }));
+                  }
                 } catch {
                   // keep existing vin on error
                 }
               }
-              setScreen('review');
-              processingStarted.current = false;
+              // Stay on review; no second processing run
             }}
           />
         </div>
@@ -381,6 +568,7 @@ export default function App() {
               odometerCroppedRef.current = null;
               setPhotos({});
               setIntake(INITIAL_INTAKE);
+              setExistingUnit(null);
               setScreen('welcome');
             }}
             onReCaptureVIN={() => {

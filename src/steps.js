@@ -1,4 +1,12 @@
+/** Step order: license first, then new-unit steps (company, dot/mc/ca, vin, unit), then odometer. */
 export const STEPS = [
+  {
+    id: 'license',
+    title: 'License plate',
+    description: 'Take a picture of the license plate. We\'ll read the plate number and state, then look up the unit.',
+    hint: 'Position the license plate inside the green frame',
+    field: 'licensePlate',
+  },
   {
     id: 'company',
     title: 'Company name',
@@ -7,17 +15,10 @@ export const STEPS = [
   },
   {
     id: 'dotmc',
-    title: 'DOT or MC',
-    description: 'Take a picture of the DOT or MC number (skip if it was in the first picture)',
+    title: 'DOT / MC / CA',
+    description: 'Take a picture of the DOT, MC, or CA number (skip if it was in the company picture)',
     field: 'dotOrMc',
     optional: true,
-  },
-  {
-    id: 'license',
-    title: 'License plate',
-    description: 'Take a picture of the license plate. We\'ll read the plate number and state (OCR).',
-    hint: 'Position the license plate inside the green frame',
-    field: 'licensePlate',
   },
   {
     id: 'vin',
@@ -27,10 +28,17 @@ export const STEPS = [
     field: 'vin',
   },
   {
+    id: 'unit',
+    title: 'Unit number',
+    description: 'Take a picture of the unit number (e.g. on the door or paperwork). We\'ll try to read it, or you can type it on the next screen.',
+    field: 'unitNumber',
+  },
+  {
     id: 'odometer',
     title: 'Odometer',
-    description: 'Take a picture of the odometer reading',
+    description: 'Take a picture of the odometer reading, or skip if not available.',
     field: 'odometer',
+    optional: true,
   },
 ];
 

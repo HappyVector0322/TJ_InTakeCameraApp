@@ -84,8 +84,8 @@ export async function companyNameOCR(base64DataUrl) {
 }
 
 /**
- * Run VIN detection via backend (same as TJ_99glide: POST /api/utility/detect-vin-image).
- * Expects raw base64 in body. Returns VIN string or null.
+ * Run VIN detection via backend (POST /api/utility/detect-vin-image, RapidAPI VIN Recognition).
+ * Returns { vin, year, make, model } when successful; vin is normalized to 17-char string, YMM from vindecode.
  * Retries once on network/connection failure (e.g. CORS or unreachable host when testing from phone).
  */
 export async function extractVINFromBase64(base64DataUrl) {
@@ -121,7 +121,14 @@ export async function extractVINFromBase64(base64DataUrl) {
     }
     const data = res.data || {};
     const vin = data.vin != null ? data.vin : data.data?.vin;
-    return vin ? String(vin).trim().toUpperCase() : null;
+    const vinStr = vin ? String(vin).trim().toUpperCase() : null;
+    if (!vinStr) return null;
+    return {
+      vin: vinStr,
+      year: data.year != null ? data.year : data.data?.year ?? undefined,
+      make: data.make ?? data.data?.make ?? undefined,
+      model: data.model ?? data.data?.model ?? undefined,
+    };
   } catch (error) {
     const isNetwork = !error.response && (error.code === 'ECONNABORTED' || error.code === 'ERR_NETWORK' || error.message?.includes('Network'));
     if (isNetwork) {
@@ -131,7 +138,14 @@ export async function extractVINFromBase64(base64DataUrl) {
         if (res.status === 200) {
           const data = res.data || {};
           const vin = data.vin != null ? data.vin : data.data?.vin;
-          return vin ? String(vin).trim().toUpperCase() : null;
+          const vinStr = vin ? String(vin).trim().toUpperCase() : null;
+          if (!vinStr) return null;
+          return {
+            vin: vinStr,
+            year: data.year != null ? data.year : data.data?.year ?? undefined,
+            make: data.make ?? data.data?.make ?? undefined,
+            model: data.model ?? data.data?.model ?? undefined,
+          };
         }
       } catch (retryErr) {
         console.warn('VIN extraction retry failed:', retryErr?.message || retryErr);

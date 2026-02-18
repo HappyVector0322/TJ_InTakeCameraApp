@@ -13,7 +13,7 @@ export function StepWizard({ stepIndex, photos, onPhoto, onSkip, onNext, onBack,
       return;
     }
     onPhoto(step.id, dataUrl);
-    onNext();
+    onNext(dataUrl);
   };
 
   const handleSkip = () => {
@@ -22,7 +22,7 @@ export function StepWizard({ stepIndex, photos, onPhoto, onSkip, onNext, onBack,
       return;
     }
     onPhoto(step.id, null);
-    onNext();
+    onNext(null);
   };
 
   const isReCapturingVIN = reCapturingVIN && step.id === 'vin';

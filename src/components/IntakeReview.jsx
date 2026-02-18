@@ -15,7 +15,7 @@ import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import styles from './IntakeReview.module.css';
 import { getCustomersList, checkExistingUnit, findEquipmentByVinOrLicense, getEquipmentList } from '../api/client';
 import { decodeVIN } from '../utils/vinDecode';
-import { validateVIN } from '../utils/vinValidation';
+import { validateVIN, correctVIN } from '../utils/vinValidation';
 import { validateCarrierId } from '../utils/dotMcValidation';
 
 const US_STATE_CODES = [
@@ -253,40 +253,53 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
     return () => { cancelled = true; };
   }, [data.vin, data.licensePlate, data.licenseRegion, data.companyName]);
 
-  // Live VIN decode on last screen (TJ: "live vin decode in the intake camera last screen")
+  // YMM now comes from VIN OCR (RapidAPI vindecode), so auto VIN-decode is disabled to reduce loading time.
+  // User can still use the "Decode VIN" button if they edit the VIN and want to refresh year/make/model.
   const vinForDecode = (data.vin || '').trim();
-  const lastDecodedVin = React.useRef('');
+
+  // Auto-correct VIN when it contains I/O/Q (common OCR mistakes) so we don't show "VIN cannot contain I, O, or Q"
   useEffect(() => {
-    if (vinForDecode.length !== 17) {
-      lastDecodedVin.current = '';
-      setVinDecodeError('');
-      return;
+    if (vinForDecode.length !== 17) return;
+    const validation = validateVIN(vinForDecode);
+    if (validation.error !== 'VIN cannot contain I, O, or Q') return;
+    const corrected = correctVIN(vinForDecode);
+    if (validateVIN(corrected).valid && corrected !== vinForDecode) {
+      onChange('vin', corrected);
     }
-    if (lastDecodedVin.current === vinForDecode) return;
-    lastDecodedVin.current = vinForDecode;
-    let cancelled = false;
-    setVinDecodeLoading(true);
-    setVinDecodeError('');
-    decodeVIN(vinForDecode)
-      .then((decoded) => {
-        if (cancelled) return;
-        setVinDecodeLoading(false);
-        if (decoded) {
-          if (decoded.year) onChange('year', decoded.year);
-          if (decoded.make) onChange('make', decoded.make);
-          if (decoded.model) onChange('model', decoded.model);
-        } else {
-          setVinDecodeError('Decode failed or VIN not found');
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setVinDecodeLoading(false);
-          setVinDecodeError('Decode failed');
-        }
-      });
-    return () => { cancelled = true; };
-  }, [vinForDecode]);
+  }, [vinForDecode, onChange]);
+
+  // const lastDecodedVin = React.useRef('');
+  // useEffect(() => {
+  //   if (vinForDecode.length !== 17) {
+  //     lastDecodedVin.current = '';
+  //     setVinDecodeError('');
+  //     return;
+  //   }
+  //   if (lastDecodedVin.current === vinForDecode) return;
+  //   lastDecodedVin.current = vinForDecode;
+  //   let cancelled = false;
+  //   setVinDecodeLoading(true);
+  //   setVinDecodeError('');
+  //   decodeVIN(vinForDecode)
+  //     .then((decoded) => {
+  //       if (cancelled) return;
+  //       setVinDecodeLoading(false);
+  //       if (decoded) {
+  //         if (decoded.year) onChange('year', decoded.year);
+  //         if (decoded.make) onChange('make', decoded.make);
+  //         if (decoded.model) onChange('model', decoded.model);
+  //       } else {
+  //         setVinDecodeError('Decode failed or VIN not found');
+  //       }
+  //     })
+  //     .catch(() => {
+  //       if (!cancelled) {
+  //         setVinDecodeLoading(false);
+  //         setVinDecodeError('Decode failed');
+  //       }
+  //     });
+  //   return () => { cancelled = true; };
+  // }, [vinForDecode]);
 
   // Existing unit check: "If company name and unit # match an existing entry then need to ask..."
   const checkExisting = useCallback(async () => {
@@ -334,6 +347,7 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
     setForceCreateNewUnit(true);
   };
 
+  // Manual decode: when user clicks "Decode VIN", fetch year/make/model (e.g. NHTSA)
   const handleDecodeVIN = useCallback(async () => {
     const vin = (data.vin || '').trim();
     if (vin.length !== 17) return;
@@ -341,7 +355,6 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
     setVinDecodeError('');
     try {
       const decoded = await decodeVIN(vin);
-      setVinDecodeLoading(false);
       if (decoded) {
         if (decoded.year) onChange('year', decoded.year);
         if (decoded.make) onChange('make', decoded.make);
@@ -351,8 +364,9 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
         setVinDecodeError('Decode failed or VIN not found');
       }
     } catch {
-      setVinDecodeLoading(false);
       setVinDecodeError('Decode failed');
+    } finally {
+      setVinDecodeLoading(false);
     }
   }, [data.vin, onChange]);
 
@@ -503,6 +517,11 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
               {!vinDecodeLoading && vinForDecode.length === 17 && (() => {
                 const validation = validateVIN(vinForDecode);
                 if (validation.valid) return <span className={styles.vinDecodeOk}>VIN valid ✓ – Verify and edit below if needed</span>;
+                // Auto-correct I/O/Q (OCR confusion); if corrected VIN is valid, show success instead of error
+                if (validation.error === 'VIN cannot contain I, O, or Q') {
+                  const corrected = correctVIN(vinForDecode);
+                  if (validateVIN(corrected).valid) return <span className={styles.vinDecodeOk}>VIN valid ✓ – Verify and edit below if needed</span>;
+                }
                 return <span className={styles.vinDecodeError} role="alert">{validation.error}</span>;
               })()}
               {!vinDecodeLoading && !vinDecodeError && vinForDecode.length > 0 && vinForDecode.length !== 17 && <span className={styles.vinDecodeError}>Enter 17 characters</span>}
