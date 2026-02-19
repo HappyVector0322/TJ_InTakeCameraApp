@@ -12,7 +12,7 @@ import { Login } from './components/Login';
 import { getToken, logout, createJobFromIntake, findEquipmentByVinOrLicense } from './api/client';
 import { TOKEN_KEY, JOB_FILE_APP_URL } from './config';
 import { extractTextFromImage, parseCompanyOrDotMc } from './utils/ocr';
-import { licensePlateOCR, extractVINFromBase64, companyNameOCR } from './utils/plateVinOcr';
+import { licensePlateOCR, extractVINFromBase64, companyNameOCR, unitNumberOCR } from './utils/plateVinOcr';
 import { decodeVIN } from './utils/vinDecode';
 import { correctVIN } from './utils/vinValidation';
 import { dotMcOCR, odometerOCR } from './utils/dotOdometerOcr';
@@ -54,19 +54,20 @@ function consumeTokenFromUrl() {
   return false;
 }
 
+/**
+ * APP FLOW: welcome → capture (photos step-by-step) → processing (OCR) → [optional verifyUnit] → review → Create job file.
+ */
 export default function App() {
   const [authenticated, setAuthenticated] = useState(!!getToken());
   const [authChecked, setAuthChecked] = useState(false);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
 
-  // SSO: consume token from URL when opened from TJ_99glide (App Drawer), then skip login
   useEffect(() => {
-    if (consumeTokenFromUrl()) {
-      setAuthenticated(true);
-    }
+    if (consumeTokenFromUrl()) setAuthenticated(true);
     setAuthChecked(true);
   }, []);
-  const [screen, setScreen] = useState('welcome'); // welcome | capture | processing | verifyUnit | review
+
+  const [screen, setScreen] = useState('welcome');
   const [stepIndex, setStepIndex] = useState(0);
   const [reCapturingVIN, setReCapturingVIN] = useState(false);
   const [photos, setPhotos] = useState({});
@@ -79,16 +80,24 @@ export default function App() {
   const processingStarted = useRef(false);
   const processingCancelledRef = useRef(false);
   const odometerCroppedRef = useRef(null);
+  const [reviewKey, setReviewKey] = useState(0);
 
-  const handleStart = () => {
+  /** Full reset for a new intake. Also used by Start over so second-time flow is clean. */
+  const resetIntakeState = useCallback(() => {
     processingStarted.current = false;
+    processingCancelledRef.current = false;
+    odometerCroppedRef.current = null;
     setProcessingError('');
     setCreateError('');
-    odometerCroppedRef.current = null;
+    setOcrProgress(0);
     setStepIndex(0);
     setPhotos({});
     setIntake(INITIAL_INTAKE);
     setExistingUnit(null);
+  }, []);
+
+  const handleStart = () => {
+    resetIntakeState();
     setScreen('capture');
   };
 
@@ -96,20 +105,15 @@ export default function App() {
     setPhotos((prev) => ({ ...prev, [stepId]: dataUrl }));
   }, []);
 
+  // Next = next step (no photo → empty for that step). On last step → processing then review. License with photo → processing (lookup).
   const handleNext = useCallback((photoForCurrentStep) => {
     if (stepIndex === 0 && STEP_IDS[0] === 'license') {
-      if (photoForCurrentStep) {
-        setScreen('processing');
-      } else {
-        setStepIndex(1);
-      }
+      if (photoForCurrentStep) setScreen('processing');
+      else setStepIndex(1);
       return;
     }
-    if (stepIndex + 1 >= STEPS.length) {
-      setScreen('processing');
-    } else {
-      setStepIndex((i) => i + 1);
-    }
+    if (stepIndex + 1 >= STEPS.length) setScreen('processing');
+    else setStepIndex((i) => i + 1);
   }, [stepIndex]);
 
   const handleBack = useCallback(() => {
@@ -120,12 +124,10 @@ export default function App() {
     if (stepIndex > 0) {
       setStepIndex((i) => i - 1);
     } else {
+      resetIntakeState();
       setScreen('welcome');
-      setStepIndex(0);
-      setPhotos({});
-      setExistingUnit(null);
     }
-  }, [stepIndex, existingUnit]);
+  }, [stepIndex, existingUnit, resetIntakeState]);
 
   useEffect(() => {
     if (screen !== 'processing' || processingStarted.current) return;
@@ -193,8 +195,9 @@ export default function App() {
             setExistingUnit({ equipment: eq, customer: cust });
             setScreen('verifyUnit');
           } else {
+            // No existing unit found - continue to next step (company) instead of going to review
             setIntake(next);
-            setStepIndex(1);
+            setStepIndex(COMPANY_STEP_INDEX);
             setScreen('capture');
           }
           setOcrProgress(1);
@@ -216,6 +219,9 @@ export default function App() {
             odometerCroppedRef.current = null;
           }
           if (processingCancelledRef.current) return;
+          if (!(next.odometer || '').trim()) {
+            setProcessingError('Odometer could not be read from the photo. You can enter it manually on the review screen.');
+          }
           setIntake(next);
           setScreen('review');
           setOcrProgress(1);
@@ -299,18 +305,27 @@ export default function App() {
             }
           } else if (stepId === 'unit') {
             setOcrProgress(done / stepsWithPhotos.length);
-            const text = await extractTextFromImage(currentPhotos[stepId], (p) => {
-              setOcrProgress((done + p) / stepsWithPhotos.length);
-            });
-            const trimmed = (text || '').trim();
-            const firstLine = trimmed.split(/\n/).map((s) => s.trim()).find(Boolean);
-            const candidate = (firstLine || trimmed).replace(/\s+/g, ' ').slice(0, 20);
-            if (candidate) next.unitNumber = candidate;
+            const unit = await unitNumberOCR(currentPhotos[stepId]);
+            if (unit) {
+              next.unitNumber = unit;
+            } else {
+              // Fallback to Tesseract if backend OCR fails
+              const text = await extractTextFromImage(currentPhotos[stepId], (p) => {
+                setOcrProgress((done + p) / stepsWithPhotos.length);
+              });
+              const trimmed = (text || '').trim();
+              const firstLine = trimmed.split(/\n/).map((s) => s.trim()).find(Boolean);
+              const candidate = (firstLine || trimmed).replace(/\s+/g, '').replace(/[^A-Za-z0-9\-_]/g, '').slice(0, 20);
+              if (candidate) next.unitNumber = candidate;
+            }
           }
           done += 1;
           setOcrProgress(done / stepsWithPhotos.length);
         }
         if (processingCancelledRef.current) return;
+        if (stepsWithPhotos.includes('odometer') && !(next.odometer || '').trim()) {
+          setProcessingError('Odometer could not be read from the photo. You can enter it manually on the review screen.');
+        }
         setIntake(next);
         setScreen('review');
         setOcrProgress(1);
@@ -331,11 +346,11 @@ export default function App() {
     setIntake((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  const handleCreateIntake = useCallback(async (createNewUnit = false) => {
+  const handleCreateIntake = useCallback(async (createNewUnit = false, createNewCustomer = false, matchedCustomerId = null) => {
     setCreating(true);
     setCreateError('');
     try {
-      const result = await createJobFromIntake(intake, createNewUnit);
+      const result = await createJobFromIntake(intake, createNewUnit, createNewCustomer, matchedCustomerId);
       const jobId = result?.newJob?._id;
       const customerMatched = result?.customerMatched === true;
       const equipmentMatched = result?.equipmentMatched === true;
@@ -554,6 +569,7 @@ export default function App() {
             </p>
           )}
           <IntakeReview
+            key={reviewKey}
             data={intake}
             photos={photos}
             odometerCroppedRef={odometerCroppedRef}
@@ -562,13 +578,8 @@ export default function App() {
             creating={creating}
             createError={createError}
             onStartOver={() => {
-              setCreateError('');
-              setProcessingError('');
-              setStepIndex(0);
-              odometerCroppedRef.current = null;
-              setPhotos({});
-              setIntake(INITIAL_INTAKE);
-              setExistingUnit(null);
+              resetIntakeState();
+              setReviewKey((k) => k + 1);
               setScreen('welcome');
             }}
             onReCaptureVIN={() => {

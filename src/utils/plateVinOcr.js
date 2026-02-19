@@ -84,6 +84,27 @@ export async function companyNameOCR(base64DataUrl) {
 }
 
 /**
+ * Unit number OCR. Backend OpenAI Vision first, else returns empty (caller can use Tesseract fallback).
+ */
+export async function unitNumberOCR(base64DataUrl) {
+  if (!base()) return null;
+  try {
+    const { data } = await axios({
+      method: 'POST',
+      url: `${base()}/api/utility/detect-unit-number-image`,
+      headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+      data: { base64Image: base64DataUrl.startsWith('data:') ? base64DataUrl : `data:image/jpeg;base64,${base64DataUrl}` },
+      timeout: OCR_TIMEOUT_MS,
+    });
+    const unitNumber = data?.unitNumber ?? '';
+    return unitNumber ? String(unitNumber).trim() : null;
+  } catch (e) {
+    console.warn('Unit number OCR (backend) failed:', e?.message);
+    return null;
+  }
+}
+
+/**
  * Run VIN detection via backend (POST /api/utility/detect-vin-image, RapidAPI VIN Recognition).
  * Returns { vin, year, make, model } when successful; vin is normalized to 17-char string, YMM from vindecode.
  * Retries once on network/connection failure (e.g. CORS or unreachable host when testing from phone).

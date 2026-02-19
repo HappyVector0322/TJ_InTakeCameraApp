@@ -48,7 +48,7 @@ export async function login(email, password) {
  * Backend matches existing customers and equipment (by VIN, license+region, or customer+unit); creates new only when no match.
  * Returns { newJob, customerData, equipmentData, customerMatched, equipmentMatched }.
  */
-export async function createJobFromIntake(intake, createNewUnit = false) {
+export async function createJobFromIntake(intake, createNewUnit = false, createNewCustomer = false, matchedCustomerId = null) {
   try {
     const { data } = await client.post('api/job/intake', {
       intake: {
@@ -65,6 +65,8 @@ export async function createJobFromIntake(intake, createNewUnit = false) {
         odometer: intake.odometer || '',
       },
       createNewUnit: !!createNewUnit,
+      createNewCustomer: !!createNewCustomer,
+      matchedCustomerId: matchedCustomerId || null,
     });
     if (data.error) {
       throw new Error(data.error);
@@ -73,6 +75,25 @@ export async function createJobFromIntake(intake, createNewUnit = false) {
   } catch (err) {
     const msg = err.response?.data?.error || err.response?.data?.message || err.message || 'Failed to create job file';
     throw new Error(msg);
+  }
+}
+
+/**
+ * Check if a customer match exists for the given company name (for customer confirmation dialog).
+ * POST jobFile/api/job/checkExistingCustomer -> { companyName, carrierIdNum? } -> { exists: boolean, matchedCustomer?: { _id, name, carrierIdNum } }
+ */
+export async function checkExistingCustomer(companyName, carrierIdNum) {
+  try {
+    const { data } = await client.post('api/job/checkExistingCustomer', {
+      companyName: (companyName || '').trim(),
+      carrierIdNum: (carrierIdNum || '').trim(),
+    });
+    if (data.error) {
+      return { exists: false };
+    }
+    return data.data || { exists: false };
+  } catch {
+    return { exists: false };
   }
 }
 

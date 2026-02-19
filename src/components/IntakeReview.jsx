@@ -13,7 +13,7 @@ import DialogContent from '@mui/material/DialogContent';
 import DialogActions from '@mui/material/DialogActions';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import styles from './IntakeReview.module.css';
-import { getCustomersList, checkExistingUnit, findEquipmentByVinOrLicense, getEquipmentList } from '../api/client';
+import { getCustomersList, checkExistingCustomer, checkExistingUnit, findEquipmentByVinOrLicense, getEquipmentList } from '../api/client';
 import { decodeVIN } from '../utils/vinDecode';
 import { validateVIN, correctVIN } from '../utils/vinValidation';
 import { validateCarrierId } from '../utils/dotMcValidation';
@@ -194,16 +194,26 @@ function FullScreenImageViewer({ open, src, alt, onClose }) {
   return ReactDOM.createPortal(content, document.body);
 }
 
+/**
+ * REVIEW STEP — User edits intake fields, then clicks "Create job file".
+ * No checks or dialogs until that click. On click: validate → maybe ask customer → maybe ask unit → create.
+ */
 export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, onCreateIntake, creating, createError, onStartOver, onReCaptureVIN }) {
   const [customerOptions, setCustomerOptions] = useState([]);
   const [equipmentOptions, setEquipmentOptions] = useState([]);
   const [fullScreenImage, setFullScreenImage] = useState({ open: false, src: null, alt: '' });
   const [vinDecodeLoading, setVinDecodeLoading] = useState(false);
   const [vinDecodeError, setVinDecodeError] = useState('');
-  const [existingUnitDialog, setExistingUnitDialog] = useState(null); // { companyName, unitNumber } when match found
-  const [existingUnitChecked, setExistingUnitChecked] = useState(false);
-  const [forceCreateNewUnit, setForceCreateNewUnit] = useState(false);
+  const [existingUnitDialog, setExistingUnitDialog] = useState(null);
+  const [existingCustomerDialog, setExistingCustomerDialog] = useState(null);
+  const [validationError, setValidationError] = useState('');
   const unitPreselected = React.useRef(false);
+
+  const submitChoicesRef = React.useRef({
+    matchedCustomerId: null,
+    forceNewCustomer: false,
+    forceNewUnit: false,
+  });
 
   useEffect(() => {
     getCustomersList()
@@ -230,7 +240,7 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
       .catch(() => setEquipmentOptions([]));
   }, [customerId]);
 
-  // Pre-select Unit when captured VIN/license matches existing equipment (TJ: "Uni# should be pre-select as SJ-18")
+  // Pre-select Unit only when we find existing equipment by VIN/license. Do not clear when no match (keep OCR value).
   useEffect(() => {
     const vin = (data.vin || '').trim();
     const licensePlate = (data.licensePlate || '').trim();
@@ -245,10 +255,8 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
         if (result?.equipment?.unit) {
           onChange('unitNumber', result.equipment.unit);
           unitPreselected.current = true;
-        } else {
-          // No match: set Unit# as empty
-          onChange('unitNumber', '');
         }
+        // No match: leave unit number as-is (e.g. from OCR). Do not overwrite with empty.
       });
     return () => { cancelled = true; };
   }, [data.vin, data.licensePlate, data.licenseRegion, data.companyName]);
@@ -256,6 +264,11 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
   // YMM now comes from VIN OCR (RapidAPI vindecode), so auto VIN-decode is disabled to reduce loading time.
   // User can still use the "Decode VIN" button if they edit the VIN and want to refresh year/make/model.
   const vinForDecode = (data.vin || '').trim();
+
+  // Clear validation error when user edits company or VIN
+  useEffect(() => {
+    setValidationError('');
+  }, [data.companyName, data.vin]);
 
   // Auto-correct VIN when it contains I/O/Q (common OCR mistakes) so we don't show "VIN cannot contain I, O, or Q"
   useEffect(() => {
@@ -301,23 +314,35 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
   //   return () => { cancelled = true; };
   // }, [vinForDecode]);
 
-  // Existing unit check: "If company name and unit # match an existing entry then need to ask..."
-  const checkExisting = useCallback(async () => {
+  /*
+   * CREATE JOB FILE — simple 3-step flow (only when user clicks the button):
+   * 1. Validate company + VIN.
+   * 2. Check customer: if backend says "possible match" → show dialog. User picks Yes (use existing) or No (new). Store in submitChoicesRef.
+   * 3. Check unit (if company+unit): if exists → show dialog. User picks Yes or No. Store in submitChoicesRef.
+   * 4. Call onCreateIntake(forceNewUnit, forceNewCustomer, matchedCustomerId) from submitChoicesRef.
+   */
+  const createNow = useCallback(() => {
+    const c = submitChoicesRef.current;
+    onCreateIntake(c.forceNewUnit, c.forceNewCustomer, c.matchedCustomerId);
+  }, [onCreateIntake]);
+
+  const doUnitStep = useCallback(() => {
     const company = (data.companyName || '').trim();
     const unit = (data.unitNumber || '').trim();
-    if (!company || !unit) return;
-    const result = await checkExistingUnit(company, unit);
-    if (result.exists) {
-      setExistingUnitDialog({ companyName: company, unitNumber: unit });
+    if (!company || !unit) {
+      createNow();
+      return;
     }
-    setExistingUnitChecked(true);
-  }, [data.companyName, data.unitNumber]);
-
-  useEffect(() => {
-    if (!existingUnitChecked && (data.companyName || '').trim() && (data.unitNumber || '').trim()) {
-      checkExisting();
-    }
-  }, [existingUnitChecked, data.companyName, data.unitNumber, checkExisting]);
+    checkExistingUnit(company, unit).then((result) => {
+      if (result.exists) {
+        // Unit exists for the same company - auto-use it without asking
+        submitChoicesRef.current.forceNewUnit = false;
+        createNow();
+      } else {
+        createNow();
+      }
+    });
+  }, [data.companyName, data.unitNumber, createNow]);
 
   const licenseRegionValue = data.licenseRegion
     ? { label: data.licenseRegion, code: data.licenseRegion }
@@ -334,17 +359,59 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
   };
 
   const handleSubmit = () => {
-    onCreateIntake(forceCreateNewUnit);
+    setValidationError('');
+    const company = (data.companyName || '').trim();
+    const vin = (data.vin || '').trim();
+    if (!company) {
+      setValidationError('Company name is required.');
+      return;
+    }
+    if (vin.length > 0 && vin.length !== 17) {
+      setValidationError('VIN must be 17 characters (or leave empty).');
+      return;
+    }
+    const vinValidation = vin.length === 17 ? validateVIN(vin) : { valid: true };
+    if (!vinValidation.valid) {
+      setValidationError(vinValidation.error || 'Invalid VIN.');
+      return;
+    }
+
+    submitChoicesRef.current = { matchedCustomerId: null, forceNewCustomer: false, forceNewUnit: false };
+
+    checkExistingCustomer(company, data.carrierIdNum).then((result) => {
+      if (result.exists && result.matchedCustomer) {
+        setExistingCustomerDialog({ intakeName: company, matchedCustomer: result.matchedCustomer });
+      } else {
+        doUnitStep();
+      }
+    });
+  };
+
+  const handleExistingCustomerYes = () => {
+    const id = existingCustomerDialog?.matchedCustomer?._id || null;
+    submitChoicesRef.current.matchedCustomerId = id;
+    submitChoicesRef.current.forceNewCustomer = false;
+    setExistingCustomerDialog(null);
+    doUnitStep();
+  };
+
+  const handleExistingCustomerNo = () => {
+    submitChoicesRef.current.matchedCustomerId = null;
+    submitChoicesRef.current.forceNewCustomer = true;
+    setExistingCustomerDialog(null);
+    doUnitStep();
   };
 
   const handleExistingUnitYes = () => {
+    submitChoicesRef.current.forceNewUnit = false;
     setExistingUnitDialog(null);
-    setForceCreateNewUnit(false);
+    createNow();
   };
 
   const handleExistingUnitNo = () => {
+    submitChoicesRef.current.forceNewUnit = true;
     setExistingUnitDialog(null);
-    setForceCreateNewUnit(true);
+    createNow();
   };
 
   // Manual decode: when user clicks "Decode VIN", fetch year/make/model (e.g. NHTSA)
@@ -377,7 +444,11 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
         <p className={styles.subtitle}>
           Edit any field if OCR was wrong, then create your job file.
         </p>
-        {createError && <p className={styles.createError}>{createError}</p>}
+        {(createError || validationError) && (
+          <p className={styles.createError} role="alert">
+            {validationError || createError}
+          </p>
+        )}
         <Box
           component="form"
           className={styles.form}
@@ -588,7 +659,7 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
             type="submit"
             variant="contained"
             size="large"
-            disabled={creating}
+            disabled={creating || !!existingCustomerDialog || !!existingUnitDialog}
             className={styles.createBtn}
             sx={{
               mt: 1,
@@ -612,6 +683,24 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
         alt={fullScreenImage.alt}
         onClose={() => setFullScreenImage({ open: false, src: null, alt: '' })}
       />
+      <Dialog open={!!existingCustomerDialog} onClose={handleExistingCustomerYes} aria-labelledby="existing-customer-dialog-title">
+        <DialogTitle id="existing-customer-dialog-title">Customer match found</DialogTitle>
+        <DialogContent>
+          {existingCustomerDialog && (
+            <p>
+              Found existing customer <strong>{existingCustomerDialog.matchedCustomer.name}</strong> in the database.
+              <br /><br />
+              You entered: <strong>{existingCustomerDialog.intakeName}</strong>
+              <br />
+              Is this the same customer?
+            </p>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleExistingCustomerNo} color="primary">No (create new customer)</Button>
+          <Button onClick={handleExistingCustomerYes} variant="contained" color="primary">Yes (use existing)</Button>
+        </DialogActions>
+      </Dialog>
       <Dialog open={!!existingUnitDialog} onClose={handleExistingUnitYes} aria-labelledby="existing-unit-dialog-title">
         <DialogTitle id="existing-unit-dialog-title">Unit already exists</DialogTitle>
         <DialogContent>
