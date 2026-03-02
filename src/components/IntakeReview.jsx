@@ -366,10 +366,9 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
       setValidationError('Company name is required.');
       return;
     }
-    if (vin.length > 0 && vin.length !== 17) {
-      setValidationError('VIN must be 17 characters (or leave empty).');
-      return;
-    }
+    // Relaxed VIN validation for intake camera:
+    // - Allow any non-empty VIN length.
+    // - Only run strict validateVIN when VIN is exactly 17 characters.
     const vinValidation = vin.length === 17 ? validateVIN(vin) : { valid: true };
     if (!vinValidation.valid) {
       setValidationError(vinValidation.error || 'Invalid VIN.');
