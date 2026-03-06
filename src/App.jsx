@@ -80,6 +80,8 @@ export default function App() {
   const processingStarted = useRef(false);
   const processingCancelledRef = useRef(false);
   const odometerCroppedRef = useRef(null);
+  const ocrLicenseRef = useRef({ plate: '', region: '' }); // Store OCR plate/region for "Skip - enter as new unit" path
+  const userSkippedExistingUnitRef = useRef(false); // When true, IntakeReview must NOT pre-fill unit from findEquipmentByVinOrLicense
   const [reviewKey, setReviewKey] = useState(0);
 
   /** Full reset for a new intake. Also used by Start over so second-time flow is clean. */
@@ -87,6 +89,8 @@ export default function App() {
     processingStarted.current = false;
     processingCancelledRef.current = false;
     odometerCroppedRef.current = null;
+    ocrLicenseRef.current = { plate: '', region: '' };
+    userSkippedExistingUnitRef.current = false;
     setProcessingError('');
     setCreateError('');
     setOcrProgress(0);
@@ -171,6 +175,14 @@ export default function App() {
           const region = (plateResult?.licenseRegion || '').trim();
           next.licensePlate = plate;
           next.licenseRegion = region;
+          ocrLicenseRef.current = { plate, region };
+          if (userSkippedExistingUnitRef.current) {
+            setOcrProgress(1);
+            setIntake(next);
+            setScreen('review');
+            processingStarted.current = false;
+            return;
+          }
           setOcrProgress(0.5);
           const result = await findEquipmentByVinOrLicense('', plate, region, '');
           setOcrProgress(0.9);
@@ -178,14 +190,16 @@ export default function App() {
           if (result?.equipment) {
             const eq = result.equipment;
             const cust = result.customer || {};
+            ocrLicenseRef.current = { plate, region };
+            // Use EQUIPMENT's plate/region as source of truth - user will confirm this unit, so review shows correct data
             setIntake({
               ...next,
               companyName: (cust.name || '').trim(),
               carrierIdType: cust.carrierIdType || 'dot',
               carrierIdNum: (cust.carrierIdNum || '').trim(),
               unitNumber: (eq.unit || '').trim(),
-              licensePlate: plate || (eq.licensePlateNumber || '').trim(),
-              licenseRegion: region || (eq.licenseRegion || '').trim(),
+              licensePlate: (eq.licensePlateNumber || plate || '').trim(),
+              licenseRegion: (eq.licenseRegion || region || '').trim(),
               vin: (eq.vin || '').trim(),
               year: (eq.year || '').trim(),
               make: (eq.make || '').trim(),
@@ -436,6 +450,9 @@ export default function App() {
   if (screen === 'verifyUnit' && existingUnit) {
     const eq = existingUnit.equipment;
     const unitLabel = (eq?.unit || eq?.unitId || eq?.licensePlateNumber || eq?.vin || 'Unit').toString().trim();
+    const matchedPlate = (eq?.licensePlateNumber || '').trim();
+    const matchedRegion = (eq?.licenseRegion || '').trim();
+    const plateDisplay = matchedPlate ? (matchedRegion ? `${matchedPlate} (${matchedRegion})` : matchedPlate) : null;
     return (
       <>
         <div className={styles.app}>
@@ -445,7 +462,12 @@ export default function App() {
               We found an existing unit for this license plate. Please verify and then take the odometer photo.
             </p>
             <p style={{ marginTop: 16, marginBottom: 8, fontWeight: 600 }}>Unit: {unitLabel}</p>
-            {existingUnit.customer?.name && <p style={{ marginBottom: 24 }}>Company: {existingUnit.customer.name}</p>}
+            {existingUnit.customer?.name && <p style={{ marginBottom: 8 }}>Company: {existingUnit.customer.name}</p>}
+            {plateDisplay && (
+              <p style={{ marginBottom: 24, fontSize: 14, color: 'var(--text-secondary, #666)' }}>
+                License: {plateDisplay}
+              </p>
+            )}
             <p style={{ marginBottom: 12, fontSize: 14, color: 'var(--text-secondary, #666)' }}>
               Use this unit or skip and enter as new?
             </p>
@@ -456,10 +478,12 @@ export default function App() {
                 style={{ margin: 0 }}
                 onClick={() => {
                   setExistingUnit(null);
+                  userSkippedExistingUnitRef.current = true;
+                  const { plate: ocrPlate, region: ocrRegion } = ocrLicenseRef.current;
                   setIntake((prev) => ({
                     ...INITIAL_INTAKE,
-                    licensePlate: prev.licensePlate,
-                    licenseRegion: prev.licenseRegion,
+                    licensePlate: ocrPlate || prev.licensePlate,
+                    licenseRegion: ocrRegion || prev.licenseRegion,
                   }));
                   setPhotos((prev) => ({ license: prev.license }));
                   setStepIndex(COMPANY_STEP_INDEX);
@@ -573,6 +597,7 @@ export default function App() {
             data={intake}
             photos={photos}
             odometerCroppedRef={odometerCroppedRef}
+            skipUnitPreselection={userSkippedExistingUnitRef.current}
             onChange={handleIntakeChange}
             onCreateIntake={handleCreateIntake}
             creating={creating}

@@ -51,9 +51,12 @@ export async function licensePlateOCR(base64DataUrl) {
       });
       const results = data.results || [];
       const plateNumber = results.length ? String(results[0].plate || '').toUpperCase() : '';
-      const plateRegion = results.length ? String(results[0].region?.code || '') : '';
+      const plateRegion = results.length ? String(results[0].region?.code || '').trim() : '';
       const regionParts = plateRegion.split('-');
-      const plateState = regionParts.length >= 2 ? String(regionParts[1]).toUpperCase() : '';
+      // Handle "us-IN" → "IN", or plain "IN" (2-letter state code)
+      const plateState = regionParts.length >= 2
+        ? String(regionParts[regionParts.length - 1]).toUpperCase()
+        : (plateRegion.length === 2 ? plateRegion.toUpperCase() : '');
       if (plateNumber || plateState) return { licenseRegion: plateState, licensePlateNumber: plateNumber };
     } catch (error) {
       console.warn('License plate OCR (PlateRecognizer) failed, trying backend:', error?.message);

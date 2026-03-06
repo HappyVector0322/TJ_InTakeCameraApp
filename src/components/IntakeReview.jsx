@@ -198,7 +198,7 @@ function FullScreenImageViewer({ open, src, alt, onClose }) {
  * REVIEW STEP — User edits intake fields, then clicks "Create job file".
  * No checks or dialogs until that click. On click: validate → maybe ask customer → maybe ask unit → create.
  */
-export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, onCreateIntake, creating, createError, onStartOver, onReCaptureVIN }) {
+export function IntakeReview({ data, photos = {}, odometerCroppedRef, skipUnitPreselection = false, onChange, onCreateIntake, creating, createError, onStartOver, onReCaptureVIN }) {
   const [customerOptions, setCustomerOptions] = useState([]);
   const [equipmentOptions, setEquipmentOptions] = useState([]);
   const [fullScreenImage, setFullScreenImage] = useState({ open: false, src: null, alt: '' });
@@ -241,7 +241,9 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
   }, [customerId]);
 
   // Pre-select Unit only when we find existing equipment by VIN/license. Do not clear when no match (keep OCR value).
+  // Skip when user chose "Skip - enter as new unit" (they explicitly rejected the matched equipment).
   useEffect(() => {
+    if (skipUnitPreselection) return;
     const vin = (data.vin || '').trim();
     const licensePlate = (data.licensePlate || '').trim();
     const licenseRegion = (data.licenseRegion || '').trim();
@@ -259,7 +261,7 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, onChange, 
         // No match: leave unit number as-is (e.g. from OCR). Do not overwrite with empty.
       });
     return () => { cancelled = true; };
-  }, [data.vin, data.licensePlate, data.licenseRegion, data.companyName]);
+  }, [skipUnitPreselection, data.vin, data.licensePlate, data.licenseRegion, data.companyName]);
 
   // YMM now comes from VIN OCR (RapidAPI vindecode), so auto VIN-decode is disabled to reduce loading time.
   // User can still use the "Decode VIN" button if they edit the VIN and want to refresh year/make/model.
