@@ -63,6 +63,7 @@ export async function createJobFromIntake(intake, createNewUnit = false, createN
         make: (intake.make || '').trim(),
         model: (intake.model || '').trim(),
         odometer: intake.odometer || '',
+        unitType: intake.unitType || 'Truck',
       },
       createNewUnit: !!createNewUnit,
       createNewCustomer: !!createNewCustomer,

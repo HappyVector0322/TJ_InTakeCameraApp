@@ -31,6 +31,8 @@ const CARRIER_ID_TYPES = [
   { value: 'mc', label: 'MC#' },
 ];
 
+const UNIT_TYPES = ['Truck', 'Trailer', 'Off-Road Equipment'];
+
 function FieldImage({ src, alt, onOpenFullScreen }) {
   if (!src) return null;
   return (
@@ -72,6 +74,10 @@ function FullScreenImageViewer({ open, src, alt, onClose }) {
     const deltaY = touch.clientY - touchStart.current.y;
     if (deltaY > 80) onClose();
   };
+
+  useEffect(() => {
+    if (open) setRotation(0);
+  }, [open]);
 
   useEffect(() => {
     if (open) {
@@ -256,6 +262,7 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, skipUnitPr
         if (cancelled) return;
         if (result?.equipment?.unit) {
           onChange('unitNumber', result.equipment.unit);
+          if (result.equipment.type) onChange('unitType', result.equipment.type);
           unitPreselected.current = true;
         }
         // No match: leave unit number as-is (e.g. from OCR). Do not overwrite with empty.
@@ -337,9 +344,7 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, skipUnitPr
     }
     checkExistingUnit(company, unit).then((result) => {
       if (result.exists) {
-        // Unit exists for the same company - auto-use it without asking
-        submitChoicesRef.current.forceNewUnit = false;
-        createNow();
+        setExistingUnitDialog({ companyName: company, unitNumber: unit });
       } else {
         createNow();
       }
@@ -541,6 +546,21 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, skipUnitPr
             />
           </Box>
           <Box className={styles.fieldWithImage}>
+            <TextField
+              select
+              fullWidth
+              label="Unit Type"
+              value={data.unitType ?? 'Truck'}
+              onChange={(e) => onChange('unitType', e.target.value)}
+              sx={{ '& .MuiInputBase-root': { borderRadius: 2 } }}
+              size="medium"
+            >
+              {UNIT_TYPES.map((type) => (
+                <MenuItem key={type} value={type}>{type}</MenuItem>
+              ))}
+            </TextField>
+          </Box>
+          <Box className={styles.fieldWithImage}>
             <Autocomplete
               options={US_STATE_CODES.map((code) => ({ label: code, code }))}
               value={licenseRegionValue}
@@ -643,19 +663,21 @@ export function IntakeReview({ data, photos = {}, odometerCroppedRef, skipUnitPr
             </Box>
             <FieldImage src={photos.vin} alt="VIN" onOpenFullScreen={(src, alt) => setFullScreenImage({ open: true, src, alt })} />
           </Box>
-          <Box className={styles.fieldWithImage}>
-            <TextField
-              fullWidth
-              label="Odometer"
-              value={data.odometer ?? ''}
-              onChange={(e) => onChange('odometer', e.target.value)}
-              placeholder="Enter odometer reading"
-              inputProps={{ inputMode: 'numeric' }}
-              sx={{ '& .MuiInputBase-root': { borderRadius: 2 } }}
-              size="medium"
-            />
-            <FieldImage src={photos.odometerCropped || (odometerCroppedRef?.current) || photos.odometer} alt="Odometer" onOpenFullScreen={(src, alt) => setFullScreenImage({ open: true, src, alt })} />
-          </Box>
+          {(data.unitType ?? 'Truck') !== 'Trailer' && (data.unitType ?? 'Truck') !== 'Off-Road Equipment' && (
+            <Box className={styles.fieldWithImage}>
+              <TextField
+                fullWidth
+                label="Odometer"
+                value={data.odometer ?? ''}
+                onChange={(e) => onChange('odometer', e.target.value)}
+                placeholder="Enter odometer reading"
+                inputProps={{ inputMode: 'numeric' }}
+                sx={{ '& .MuiInputBase-root': { borderRadius: 2 } }}
+                size="medium"
+              />
+              <FieldImage src={photos.odometerCropped || (odometerCroppedRef?.current) || photos.odometer} alt="Odometer" onOpenFullScreen={(src, alt) => setFullScreenImage({ open: true, src, alt })} />
+            </Box>
+          )}
           <Button
             type="submit"
             variant="contained"

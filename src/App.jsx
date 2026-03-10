@@ -32,6 +32,7 @@ const INITIAL_INTAKE = {
   make: '',
   model: '',
   odometer: '',
+  unitType: 'Truck',
 };
 
 /** Parse token from URL hash (#token=...) for SSO from TJ_99glide. Store and strip from URL. */
@@ -110,15 +111,33 @@ export default function App() {
   }, []);
 
   // Next = next step (no photo → empty for that step). On last step → processing then review. License with photo → processing (lookup).
-  const handleNext = useCallback((photoForCurrentStep) => {
+  const handleNext = useCallback((photoOrValueForCurrentStep) => {
     if (stepIndex === 0 && STEP_IDS[0] === 'license') {
-      if (photoForCurrentStep) setScreen('processing');
+      if (photoOrValueForCurrentStep) setScreen('processing');
       else setStepIndex(1);
       return;
     }
-    if (stepIndex + 1 >= STEPS.length) setScreen('processing');
-    else setStepIndex((i) => i + 1);
-  }, [stepIndex]);
+    // When leaving unitType step, persist selected value so review/processing see it (avoids async setState race)
+    if (STEPS[stepIndex].id === 'unitType' && photoOrValueForCurrentStep) {
+      setIntake((prev) => ({ ...prev, unitType: photoOrValueForCurrentStep }));
+    }
+    const nextIndex = stepIndex + 1;
+    if (nextIndex >= STEPS.length) {
+      setScreen('processing');
+    } else {
+      const nextStep = STEPS[nextIndex];
+      // Skip odometer for Trailer and Off-Road Equipment
+      const currentUnitType = STEPS[stepIndex].id === 'unitType'
+        ? photoOrValueForCurrentStep  // value just selected on this step
+        : intake.unitType;
+      const isTrailerOrOffRoad = currentUnitType === 'Trailer' || currentUnitType === 'Off-Road Equipment';
+      if (nextStep.id === 'odometer' && isTrailerOrOffRoad) {
+        setScreen('processing');
+      } else {
+        setStepIndex(nextIndex);
+      }
+    }
+  }, [stepIndex, intake.unitType]);
 
   const handleBack = useCallback(() => {
     if (existingUnit && stepIndex === ODOMETER_STEP_INDEX) {
@@ -146,7 +165,7 @@ export default function App() {
       processingCancelledRef.current = true;
     };
     if (stepsWithPhotos.length === 0) {
-      setIntake(INITIAL_INTAKE);
+      setIntake({ ...INITIAL_INTAKE, unitType: intake.unitType });
       setScreen('review');
       setOcrProgress(1);
       processingStarted.current = false;
@@ -159,7 +178,7 @@ export default function App() {
     const isExistingUnitSkippedOdometer = existingUnit && stepsWithPhotos.length === 1 && stepsWithPhotos[0] === 'license';
 
     (async () => {
-      let next = { ...INITIAL_INTAKE };
+      let next = { ...INITIAL_INTAKE, unitType: intake.unitType };
       try {
         if (isExistingUnitSkippedOdometer) {
           setOcrProgress(1);
@@ -204,6 +223,7 @@ export default function App() {
               year: (eq.year || '').trim(),
               make: (eq.make || '').trim(),
               model: (eq.model || '').trim(),
+              unitType: eq.type || 'Truck',
               odometer: '',
             });
             setExistingUnit({ equipment: eq, customer: cust });
@@ -453,15 +473,19 @@ export default function App() {
     const matchedPlate = (eq?.licensePlateNumber || '').trim();
     const matchedRegion = (eq?.licenseRegion || '').trim();
     const plateDisplay = matchedPlate ? (matchedRegion ? `${matchedPlate} (${matchedRegion})` : matchedPlate) : null;
+    const isTrailerOrOffRoad = eq?.type === 'Trailer' || eq?.type === 'Off-Road Equipment';
     return (
       <>
         <div className={styles.app}>
           <div className={styles.welcome} style={{ padding: 24, textAlign: 'left' }}>
             <h1 className={styles.welcomeTitle}>Unit found</h1>
             <p className={styles.welcomeDesc}>
-              We found an existing unit for this license plate. Please verify and then take the odometer photo.
+              {isTrailerOrOffRoad
+                ? 'We found an existing unit for this license plate. Odometer is not applicable for this unit type.'
+                : 'We found an existing unit for this license plate. Please verify and then take the odometer photo.'}
             </p>
             <p style={{ marginTop: 16, marginBottom: 8, fontWeight: 600 }}>Unit: {unitLabel}</p>
+            {eq?.type && <p style={{ marginBottom: 8, color: 'var(--text-muted)' }}>Type: {eq.type}</p>}
             {existingUnit.customer?.name && <p style={{ marginBottom: 8 }}>Company: {existingUnit.customer.name}</p>}
             {plateDisplay && (
               <p style={{ marginBottom: 24, fontSize: 14, color: 'var(--text-secondary, #666)' }}>
@@ -496,11 +520,16 @@ export default function App() {
                 type="button"
                 className={styles.startBtn}
                 onClick={() => {
-                  setStepIndex(ODOMETER_STEP_INDEX);
-                  setScreen('capture');
+                  if (isTrailerOrOffRoad) {
+                    // Skip odometer — go directly to review
+                    setScreen('review');
+                  } else {
+                    setStepIndex(ODOMETER_STEP_INDEX);
+                    setScreen('capture');
+                  }
                 }}
               >
-                Yes, take odometer photo
+                {isTrailerOrOffRoad ? 'Confirm — go to review' : 'Yes, take odometer photo'}
               </button>
             </div>
           </div>
@@ -517,11 +546,13 @@ export default function App() {
           <StepWizard
             stepIndex={stepIndex}
             photos={photos}
+            intake={intake}
             onPhoto={handlePhoto}
             onSkip={() => {}}
             onNext={handleNext}
             onBack={reCapturingVIN ? () => { setReCapturingVIN(false); setScreen('review'); } : handleBack}
             reCapturingVIN={reCapturingVIN}
+            onIntakeChange={handleIntakeChange}
             onReCaptureComplete={async (stepId, dataUrl) => {
               if (stepId !== 'vin') return;
               setReCapturingVIN(false);

@@ -34,6 +34,14 @@ export const STEPS = [
     field: 'unitNumber',
   },
   {
+    id: 'unitType',
+    title: 'Unit Type',
+    description: 'Select the type of unit. Trailers and Off-Road Equipment will skip the odometer step.',
+    field: 'unitType',
+    noCamera: true,
+    choices: ['Truck', 'Trailer', 'Off-Road Equipment'],
+  },
+  {
     id: 'odometer',
     title: 'Odometer',
     description: 'Take a picture of the odometer reading, or skip if not available.',
