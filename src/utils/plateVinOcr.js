@@ -50,14 +50,39 @@ export async function licensePlateOCR(base64DataUrl) {
         timeout: OCR_TIMEOUT_MS,
       });
       const results = data.results || [];
-      const plateNumber = results.length ? String(results[0].plate || '').toUpperCase() : '';
-      const plateRegion = results.length ? String(results[0].region?.code || '').trim() : '';
+      // When multiple detections exist (e.g. plate + registration sticker), pick the one with
+      // the largest bounding box — the actual plate is always physically bigger than any sticker.
+      const boxArea = (r) => {
+        const b = r?.box;
+        if (!b) return 0;
+        return Math.max(0, (b.xmax - b.xmin) * (b.ymax - b.ymin));
+      };
+      const best = results.length
+        ? results.reduce((a, b) => (boxArea(b) > boxArea(a) ? b : a))
+        : null;
+      const plateNumber = best ? String(best.plate || '').toUpperCase() : '';
+      const plateRegion = best ? String(best.region?.code || '').trim() : '';
       const regionParts = plateRegion.split('-');
       // Handle "us-IN" → "IN", or plain "IN" (2-letter state code)
       const plateState = regionParts.length >= 2
         ? String(regionParts[regionParts.length - 1]).toUpperCase()
         : (plateRegion.length === 2 ? plateRegion.toUpperCase() : '');
-      if (plateNumber || plateState) return { licenseRegion: plateState, licensePlateNumber: plateNumber };
+      if (plateNumber || plateState) {
+        // If confidence is low OR plate ends with 1-2 letters after digits (likely a plate-type suffix
+        // e.g. "97B675S" from Illinois "ST" marker), use OpenAI Vision as a second opinion.
+        const score = best?.score ?? 1;
+        // Trailing 1-2 letters after digits = likely plate-type suffix (e.g. "ST" on IL plates)
+        const hasSuspiciousSuffix = /\d[A-Z]{1,2}$/.test(plateNumber);
+        if ((score < 0.90 || hasSuspiciousSuffix) && base()) {
+          try {
+            const backendResult = await licensePlateViaBackend(base64DataUrl);
+            if (backendResult?.licensePlateNumber) return backendResult;
+          } catch {
+            // fall through to PlateRecognizer result
+          }
+        }
+        return { licenseRegion: plateState, licensePlateNumber: plateNumber };
+      }
     } catch (error) {
       console.warn('License plate OCR (PlateRecognizer) failed, trying backend:', error?.message);
     }
