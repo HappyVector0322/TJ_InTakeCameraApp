@@ -22,6 +22,36 @@ client.interceptors.request.use((config) => {
   return config;
 });
 
+// 401 = token invalid/expired. 403 = no token provided. Both mean not authenticated.
+// Fires auth:expired so App redirects to login immediately.
+// Fires network:error for connectivity failures so App warns the user right away.
+// Debounce network:error so simultaneous failing calls only show one snackbar.
+let _lastNetworkErrorTime = 0;
+client.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error.response?.status;
+    const isLoginEndpoint = error.config?.url?.includes('api/user/login');
+
+    if ((status === 401 || status === 403) && !isLoginEndpoint) {
+      // Auth failure — clear token and redirect to login
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem(TOKEN_KEY);
+        window.dispatchEvent(new CustomEvent('auth:expired'));
+      }
+    } else if (!error.response) {
+      // No response at all = backend is down or no network
+      // Debounce: only fire once every 3 seconds to avoid snackbar spam
+      const now = Date.now();
+      if (typeof window !== 'undefined' && now - _lastNetworkErrorTime > 3000) {
+        _lastNetworkErrorTime = now;
+        window.dispatchEvent(new CustomEvent('network:error'));
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 /**
  * Login – same as 99workflow / job file app.
  * POST jobFile/api/user/login -> { data: { serviceToken, user }, error }
@@ -181,4 +211,12 @@ export function logout() {
   if (typeof window !== 'undefined') {
     localStorage.removeItem(TOKEN_KEY);
   }
+}
+
+/**
+ * Lightweight token check — calls GET api/user/checkToken which requires a valid Bearer token.
+ * Throws if token is missing, expired, or rejected (401).
+ */
+export async function verifyToken() {
+  await client.get('api/user/checkToken');
 }

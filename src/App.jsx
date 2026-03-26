@@ -9,7 +9,7 @@ const COMPANY_STEP_INDEX = STEP_IDS.indexOf('company');
 import { StepWizard } from './components/StepWizard';
 import { IntakeReview } from './components/IntakeReview';
 import { Login } from './components/Login';
-import { getToken, logout, createJobFromIntake, findEquipmentByVinOrLicense } from './api/client';
+import { getToken, logout, verifyToken, createJobFromIntake, findEquipmentByVinOrLicense } from './api/client';
 import { TOKEN_KEY, JOB_FILE_APP_URL } from './config';
 import { extractTextFromImage, parseCompanyOrDotMc } from './utils/ocr';
 import { licensePlateOCR, extractVINFromBase64, companyNameOCR, unitNumberOCR } from './utils/plateVinOcr';
@@ -61,11 +61,52 @@ function consumeTokenFromUrl() {
 export default function App() {
   const [authenticated, setAuthenticated] = useState(!!getToken());
   const [authChecked, setAuthChecked] = useState(false);
+  const [startError, setStartError] = useState('');
+  const [verifying, setVerifying] = useState(false);
   const [snackbar, setSnackbar] = useState({ open: false, message: '', severity: 'success' });
 
   useEffect(() => {
-    if (consumeTokenFromUrl()) setAuthenticated(true);
-    setAuthChecked(true);
+    const ssoSet = consumeTokenFromUrl();
+    if (ssoSet) setAuthenticated(true);
+
+    const token = getToken();
+    if (!token && !ssoSet) {
+      // No token at all — ensure login screen even if React state is stale
+      setAuthenticated(false);
+      setAuthChecked(true);
+      return;
+    }
+    // Verify token with server — catches expired tokens and stale state without page refresh
+    verifyToken()
+      .catch(() => {
+        // 401/403: interceptor already dispatched auth:expired → setAuthenticated(false)
+        // network error: user stays on loading until connection recovers — handled by snackbar
+      })
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  // Auto-logout when any API call returns 401/403 (token expired or missing mid-session)
+  useEffect(() => {
+    const handleExpired = () => {
+      setAuthenticated(false);
+      setScreen('welcome');
+      // Reset all in-progress states so next login starts clean
+      setVerifying(false);
+      setStartError('');
+      setCreating(false);
+      setCreateError('');
+    };
+    window.addEventListener('auth:expired', handleExpired);
+    return () => window.removeEventListener('auth:expired', handleExpired);
+  }, []);
+
+  // Show snackbar when backend goes offline mid-session
+  useEffect(() => {
+    const handleNetworkError = () => {
+      setSnackbar({ open: true, message: 'Server is not available. Please check your connection.', severity: 'error' });
+    };
+    window.addEventListener('network:error', handleNetworkError);
+    return () => window.removeEventListener('network:error', handleNetworkError);
   }, []);
 
   const [screen, setScreen] = useState('welcome');
@@ -101,9 +142,28 @@ export default function App() {
     setExistingUnit(null);
   }, []);
 
-  const handleStart = () => {
-    resetIntakeState();
-    setScreen('capture');
+  const handleStart = async () => {
+    if (verifying) return;
+    setStartError('');
+    setVerifying(true);
+    try {
+      await verifyToken();
+      resetIntakeState();
+      setScreen('capture');
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 401 || status === 403) {
+        // Interceptor already fired auth:expired → login screen shown automatically
+      } else if (!err.response) {
+        // No response = backend is down or no network
+        setStartError('Cannot connect to server. Please check your connection before capturing photos.');
+      } else {
+        // Unexpected server error
+        setStartError('Something went wrong. Please try again.');
+      }
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const handlePhoto = useCallback((stepId, dataUrl) => {
@@ -457,8 +517,13 @@ export default function App() {
           <p className={styles.welcomeDesc}>
             Start with a license plate photo. If we find the unit, you’ll only need to capture the odometer. Otherwise, capture company, DOT/MC/CA, VIN, unit #, and odometer. You can always type or edit any field on the review screen.
           </p>
-          <button type="button" className={styles.startBtn} onClick={handleStart}>
-            Start
+          {startError && (
+            <p className={styles.createError} role="alert" style={{ marginBottom: 12 }}>
+              {startError}
+            </p>
+          )}
+          <button type="button" className={styles.startBtn} onClick={handleStart} disabled={verifying}>
+            {verifying ? 'Checking…' : 'Start'}
           </button>
         </div>
       </div>

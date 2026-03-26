@@ -24,6 +24,7 @@ export function CameraCapture({ onCapture, onSkip, onBack, onNext, step, optiona
   const webcamRef = useRef(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
+  const [webcamKey, setWebcamKey] = useState(0);
   const [zoom, setZoom] = useState(1);
   const [flash, setFlash] = useState(false);
   const [rotation, setRotation] = useState(0); // 0, 90, 180, 270 (degrees clockwise)
@@ -59,6 +60,18 @@ export function CameraCapture({ onCapture, onSkip, onBack, onNext, step, optiona
     } else {
       setError(err?.message || 'Could not access camera. Use http://localhost:3000 or http://127.0.0.1:3000');
     }
+  }, []);
+
+  // Restart camera when tab regains focus — mobile browsers kill the stream when tab is hidden
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        setReady(false);
+        setWebcamKey((k) => k + 1);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, []);
 
   // Torch control — robust for Android/Samsung (e.g. Galaxy Xcover Pro)
@@ -178,6 +191,7 @@ export function CameraCapture({ onCapture, onSkip, onBack, onNext, step, optiona
       <div className={styles.videoWrap} data-camera-image-box aria-label="Camera view">
         <div className={styles.videoRotateWrap}>
           <Webcam
+            key={webcamKey}
             ref={webcamRef}
             audio={false}
             screenshotFormat="image/jpeg"
