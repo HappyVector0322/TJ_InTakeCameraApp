@@ -133,6 +133,79 @@ export async function processForOCR(dataUrl, overlayType) {
 }
 
 /**
+ * Process an odometer capture to recover blown-out LCD highlights caused by glare.
+ * LCD odometer screens are often overexposed (too bright/white-washed).
+ * - Gamma > 1 darkens highlights, pulling washed-out pixels back toward readable range
+ * - Negative brightness offset reduces overall exposure
+ * - Higher contrast makes digits stand out against background
+ *
+ * @param {string} dataUrl - Captured image as data URL
+ * @returns {Promise<string>} Processed image as data URL
+ */
+export async function processOdometerForOCR(dataUrl) {
+  try {
+    const img = await loadImage(dataUrl);
+    const canvas = document.createElement('canvas');
+    canvas.width = img.width;
+    canvas.height = img.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+
+    // Measure the 95th percentile luminance to detect localized LCD glare.
+    // Average luminance fails because glare is localized — the blown-out LCD screen
+    // sits in a dark dashboard, keeping the average low even when digits are washed out.
+    // The 95th percentile (top 5% brightest pixels) directly measures the highlight level.
+    const pixelCount = data.length / 4;
+    const luminances = new Float32Array(pixelCount);
+    for (let i = 0; i < data.length; i += 4) {
+      luminances[i >> 2] = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+    }
+    luminances.sort();
+    const p95 = luminances[Math.floor(pixelCount * 0.95)]; // 0–255
+
+    // Scale correction from 0 (no glare) to 1 (heavy glare) based on highlight level.
+    // p95 <= 180: highlights are fine, no correction needed.
+    // p95 >= 240: highlights are blown out, apply full correction.
+    const t = Math.max(0, Math.min(1, (p95 - 180) / 60));
+
+    // No glare detected — return the original image untouched
+    if (t === 0) return dataUrl;
+
+    // Max correction values (applied at t = 1, i.e. heavy glare)
+    const maxGamma = 2.0;        // > 1 darkens highlights and recovers blown-out LCD
+    const maxBrightness = -0.18; // negative = reduce overall exposure
+    const maxContrast = 1.5;     // boost contrast so digits pop after darkening
+
+    // Interpolate toward neutral (gamma=1, brightness=0, contrast=1) for normal images
+    const gamma = 1 + (maxGamma - 1) * t;
+    const brightness = maxBrightness * t;
+    const contrast = 1 + (maxContrast - 1) * t;
+
+    // Precompute gamma LUT for speed
+    const gammaLUT = new Uint8ClampedArray(256);
+    for (let i = 0; i < 256; i++) {
+      gammaLUT[i] = Math.round(Math.pow(i / 255, gamma) * 255);
+    }
+
+    for (let i = 0; i < data.length; i += 4) {
+      for (let j = 0; j < 3; j++) {
+        let v = gammaLUT[data[i + j]];
+        v = Math.min(255, Math.max(0, (v - 128) * contrast + 128 + brightness * 255));
+        data[i + j] = v;
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+    return canvas.toDataURL('image/jpeg', 0.92);
+  } catch (err) {
+    console.warn('Odometer image processing failed, using original:', err);
+    return dataUrl;
+  }
+}
+
+/**
  * Process an already-cropped overlay image (e.g. from cropScreenshotToOverlay).
  * No center-crop – only enhance and optional resize for license. Used when green box
  * is rotated and we crop by DOM rect (same as 99workflow).

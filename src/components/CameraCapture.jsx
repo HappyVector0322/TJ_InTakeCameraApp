@@ -1,7 +1,7 @@
 import React, { useRef, useCallback, useState, useEffect } from 'react';
 import Webcam from 'react-webcam';
 import { captureCoveredScreenshot, cropScreenshotToOverlay } from '../utils/captureCoveredScreenshot';
-import { processForOCR, processCroppedForOCR, normalizeOrientationForOCR } from '../utils/imageProcessor';
+import { processForOCR, processCroppedForOCR, normalizeOrientationForOCR, processOdometerForOCR } from '../utils/imageProcessor';
 import styles from './CameraCapture.module.css';
 
 const videoConstraints = {
@@ -144,6 +144,9 @@ export function CameraCapture({ onCapture, onSkip, onBack, onNext, step, optiona
         }
         const oriented = await normalizeOrientationForOCR(cropped, rotation);
         setCapturedPreview(oriented);
+      } else if (step?.id === 'odometer') {
+        const processed = await processOdometerForOCR(dataUrl);
+        setCapturedPreview(processed);
       } else {
         setCapturedPreview(dataUrl);
       }
@@ -155,6 +158,12 @@ export function CameraCapture({ onCapture, onSkip, onBack, onNext, step, optiona
             const cropped = await processForOCR(fallback, step.id);
             const oriented = await normalizeOrientationForOCR(cropped, rotation);
             setCapturedPreview(oriented);
+          } catch (_) {
+            setCapturedPreview(fallback);
+          }
+        } else if (step?.id === 'odometer') {
+          try {
+            setCapturedPreview(await processOdometerForOCR(fallback));
           } catch (_) {
             setCapturedPreview(fallback);
           }
@@ -199,7 +208,10 @@ export function CameraCapture({ onCapture, onSkip, onBack, onNext, step, optiona
             onUserMedia={handleUserMedia}
             onUserMediaError={handleUserMediaError}
             className={styles.video}
-            style={{ transform: `scale(${zoom})` }}
+            style={{
+              transform: `scale(${zoom})`,
+              filter: step?.id === 'odometer' ? 'brightness(0.65) contrast(1.5)' : undefined,
+            }}
             playsInline
             mirrored={false}
           />
